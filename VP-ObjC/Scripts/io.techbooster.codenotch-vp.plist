@@ -1,0 +1,29 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!-- audience: machine -->
+<!-- Same Label/binary path as Scripts/io.techbooster.codenotch-vp.plist (the
+     Swift build's LaunchAgent) because both builds install the app bundle to
+     the same ~/Applications/Codenotch VP.app destination — only the source
+     tree differs (build-objc/ here vs build/ there). Installing this one
+     (via install-vp-objc.sh) simply means the binary at that path was
+     produced by clang, not swiftc. -->
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+	<key>Label</key>
+	<string>io.techbooster.codenotch-vp</string>
+	<key>ProgramArguments</key>
+	<array>
+		<string>/Users/vasylpavlyuchok/Applications/Codenotch VP.app/Contents/MacOS/Codenotch VP</string>
+	</array>
+	<key>RunAtLoad</key>
+	<true/>
+	<key>KeepAlive</key>
+	<true/>
+	<key>ProcessType</key>
+	<string>Interactive</string>
+	<key>StandardOutPath</key>
+	<string>/tmp/codenotch-vp.out.log</string>
+	<key>StandardErrorPath</key>
+	<string>/tmp/codenotch-vp.err.log</string>
+</dict>
+</plist>
