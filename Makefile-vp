@@ -1,0 +1,37 @@
+# audience: machine
+# Builds and runs Codenotch VP with plain swiftc — no Xcode project, no
+# xcodebuild. Targets: build, run, install.
+SHELL := /bin/bash
+REPO_DIR := $(shell cd "$(dir $(lastword $(MAKEFILE_LIST)))" && pwd)
+VP_DIR := $(REPO_DIR)/VP
+BUILD_DIR := $(REPO_DIR)/build
+APP := $(BUILD_DIR)/Codenotch VP.app
+BIN := $(APP)/Contents/MacOS/Codenotch VP
+SOURCES := $(wildcard $(VP_DIR)/*.swift)
+
+.PHONY: build run install clean-build
+
+build:
+	mkdir -p "$(BUILD_DIR)"
+	mkdir -p "$(APP)/Contents/MacOS"
+	mkdir -p "$(APP)/Contents/Resources"
+	xcrun -sdk macosx swiftc -swift-version 5 \
+		-target x86_64-apple-macosx13.0 \
+		-o "$(BIN)" \
+		$(SOURCES)
+	cp "$(VP_DIR)/Info.plist" "$(APP)/Contents/Info.plist"
+	/usr/bin/codesign --force --deep --sign - "$(APP)"
+	@echo "Built: $(APP)"
+
+run: build
+	open "$(APP)"
+
+install: build
+	"$(REPO_DIR)/Scripts/install-vp.sh"
+
+# Removes only files this Makefile itself produced, inside build/ — never
+# touches anything else. Kept separate from `build` so nothing is ever wiped
+# as a side effect of a normal build.
+clean-build:
+	@echo "clean-build is intentionally not wired to rm anything automatically."
+	@echo "build/ is gitignored; remove it by hand if you want a from-scratch build."
