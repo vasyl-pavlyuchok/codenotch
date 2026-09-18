@@ -30,12 +30,22 @@ final class NotchContentView: NSView {
         addSubview(claudeCell)
         addSubview(codexCell)
         layoutCells()
+        rebuildTrackingAreas()
     }
     required init?(coder: NSCoder) { fatalError() }
 
     override func layout() {
         super.layout()
         layoutCells()
+        rebuildTrackingAreas()
+    }
+
+    // AppKit's own hook for keeping tracking areas current — called
+    // automatically on resize and when the view first enters a window, so
+    // hover works even if `layout()` is never invoked for this frame-based
+    // (non-constraint) view hierarchy.
+    override func updateTrackingAreas() {
+        super.updateTrackingAreas()
         rebuildTrackingAreas()
     }
 

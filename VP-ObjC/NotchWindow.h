@@ -19,6 +19,12 @@ NS_ASSUME_NONNULL_BEGIN
  * Ported from VP/Layout.swift. */
 @interface VPLayout : NSObject
 
+/* Live size control (CEO request, 18-sep-2026): every pill dimension below
+ * is multiplied by this factor. 1.0 is the already-reduced ~55% baseline,
+ * not the original mockup's size. Clamped to [0.7, 1.4] on write. Does not
+ * affect the hover card, which has its own fixed size. */
+@property (class, nonatomic) CGFloat scale;
+
 /* Pill body */
 @property (class, nonatomic, readonly) CGFloat pillDepth;      /* .notch width */
 @property (class, nonatomic, readonly) CGFloat curl;            /* ::before/::after 22x22 */
@@ -37,8 +43,13 @@ NS_ASSUME_NONNULL_BEGIN
 @property (class, nonatomic, readonly) CGFloat labelHeight;
 
 @property (class, nonatomic, readonly) CGFloat cellHeight;
-@property (class, nonatomic, readonly) CGFloat pillContentHeight;
-@property (class, nonatomic, readonly) CGFloat pillTotalHeight;
+
+/* Height depends on how many provider cells are actually shown — a provider
+ * can be hidden from its own toggle in the settings menu (CEO request,
+ * 18-sep-2026: "si yo desactivo Codex, tiene que desaparecer de esa barra"),
+ * so the pill must shrink/grow rather than always assuming both cells. */
++ (CGFloat)pillContentHeightForVisibleCells:(NSInteger)count;
++ (CGFloat)pillTotalHeightForVisibleCells:(NSInteger)count;
 
 /* Tooltip card */
 @property (class, nonatomic, readonly) CGFloat cardWidth;
@@ -54,6 +65,14 @@ NS_ASSUME_NONNULL_BEGIN
 @property (class, nonatomic, readonly) CGFloat cardUsedHeight;
 @property (class, nonatomic, readonly) CGFloat cardRowSpacingTop; /* .lr margin-top on non-first rows */
 @property (class, nonatomic, readonly) CGFloat cardSectionGap;
+
+/* Divider + settings-gear strip below the two provider cells (CEO request,
+ * 18-sep-2026: moved down from a top header band; opens the same menu that
+ * quits the app and will hold future settings). */
+@property (class, nonatomic, readonly) CGFloat dividerGap;       /* space above and below the divider line */
+@property (class, nonatomic, readonly) CGFloat dividerThickness;
+@property (class, nonatomic, readonly) CGFloat footerHeight;     /* strip holding the centred gear icon */
+@property (class, nonatomic, readonly) CGFloat footerIconSize;
 
 @end
 
@@ -104,6 +123,9 @@ CGPathRef VPRoundedRectPathCreate(CGSize size, CGFloat radius);
  * current. */
 @interface VPTooltipCardView : NSView
 @property (nonatomic, copy) NSString *title;
+/* Plan name shown right-aligned on the title row, e.g. "Max 5x" (CEO
+ * request, 18-sep-2026). nil draws nothing -- Codex has no such concept. */
+@property (nonatomic, copy, nullable) NSString *subtitle;
 @property (nonatomic) VPGlyphKind glyph;
 @property (nonatomic, copy) NSArray<VPLimitRow *> *rows;
 /* Labels (VPLimitRow.label) of rows that should render as stale/dimmed. */
@@ -113,7 +135,11 @@ CGPathRef VPRoundedRectPathCreate(CGSize size, CGFloat radius);
  * the right edge should be centred — set to the hovered ring's centre. */
 @property (nonatomic, nullable) NSNumber *pointerY;
 
-+ (CGFloat)heightForRowCount:(NSInteger)count hasEmptyMessage:(BOOL)hasEmptyMessage;
+/* Height accounts for each row's real label/reset-time text: a row whose
+ * label is long enough to collide with its reset time (e.g. "Fable esta
+ * semana · límite propio") stacks the reset time onto its own line instead
+ * of overlapping it — CEO-reported bug, 18-sep-2026. */
++ (CGFloat)heightForRows:(NSArray<VPLimitRow *> *)rows hasEmptyMessage:(BOOL)hasEmptyMessage;
 
 /* How far the pointer triangle reaches past the card's own right edge. The
  * view's frame is cardWidth + pointerReach wide so the triangle has room to
@@ -127,6 +153,16 @@ CGPathRef VPRoundedRectPathCreate(CGSize size, CGFloat radius);
 
 @protocol VPNotchContentViewDelegate <NSObject>
 - (void)notchContentView:(VPNotchContentView *)view hoverChangedProvider:(nullable NSNumber *)providerKind; /* boxed VPGlyphKind, nil = no hover */
+/* The gear icon (or a right-click anywhere on the pill) was pressed —
+ * CEO request, 18-sep-2026: build and show the settings menu (name+version,
+ * per-provider show/hide toggles, opacity slider, quit) from the
+ * controller, which owns the persisted state, rather than from the view
+ * itself. */
+- (void)notchContentView:(VPNotchContentView *)view showSettingsMenuForEvent:(NSEvent *)event;
+/* Mouse went down on the divider strip (CEO request, 18-sep-2026: "arrastrar
+ * por ese lateral la ventana... pegada al borde"). The controller runs its
+ * own drag loop from here since it owns the panel being moved. */
+- (void)notchContentView:(VPNotchContentView *)view beginDividerDragWithEvent:(NSEvent *)event;
 @end
 
 /* The pill body: draws the black flared-corner shape and hosts the two
@@ -136,6 +172,11 @@ CGPathRef VPRoundedRectPathCreate(CGSize size, CGFloat radius);
 @property (nonatomic, weak, nullable) id<VPNotchContentViewDelegate> hoverDelegate;
 @property (nonatomic, strong, readonly) VPProviderCellView *claudeCell;
 @property (nonatomic, strong, readonly) VPProviderCellView *codexCell;
+/* Per-provider show/hide (CEO request, 18-sep-2026): hiding a provider drops
+ * its cell from layout and hit-testing, and the pill shrinks to fit. */
+@property (nonatomic, getter=isClaudeVisible) BOOL claudeVisible;
+@property (nonatomic, getter=isCodexVisible) BOOL codexVisible;
+@property (nonatomic, readonly) NSInteger visibleCellCount;
 @end
 
 #pragma mark - Window controller
@@ -161,6 +202,9 @@ CGPathRef VPRoundedRectPathCreate(CGSize size, CGFloat radius);
                               installed:(BOOL)installed;
 
 - (void)setClaudeCardRows:(NSArray<VPLimitRow *> *)rows staleLabels:(NSSet<NSString *> *)staleLabels;
+/* The account's plan, e.g. "Max 5x" (CEO request, 18-sep-2026), shown on the
+ * Claude card's title row. nil hides it. */
+- (void)setClaudePlanLabel:(nullable NSString *)planLabel;
 - (void)setCodexCardRows:(NSArray<VPLimitRow *> *)rows installed:(BOOL)installed;
 
 @end

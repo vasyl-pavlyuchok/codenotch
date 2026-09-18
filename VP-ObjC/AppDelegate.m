@@ -23,7 +23,10 @@
 
 @interface VPUsageCoordinator ()
 @property (nonatomic, weak) VPNotchWindowController *window;
-@property (nonatomic, strong, nullable) VPLimitRow *fableRow;
+/* weekly_all + Fable, straight from the live OAuth usage call — see
+ * ClaudeOAuthUsage.h for why this replaced the local file's dead
+ * (never-written) seven_day field. */
+@property (nonatomic, copy) NSArray<VPLimitRow *> *oauthWeeklyRows;
 @property (nonatomic, strong, nullable) VPClaudeUsageReading *claudeFileReading;
 @property (nonatomic, strong, nullable) VPLimitRow *codexRow;
 @property (nonatomic) BOOL codexInstalled;
@@ -35,6 +38,7 @@
     self = [super init];
     if (self) {
         _window = window;
+        _oauthWeeklyRows = @[];
     }
     return self;
 }
@@ -44,6 +48,7 @@
     [self refreshSessionState];
     [self refreshCodex];
     [self pollFable];
+    [self.window setClaudePlanLabel:[VPClaudeOAuthUsage planLabel]];
 
     __weak typeof(self) weakSelf = self;
     [NSTimer scheduledTimerWithTimeInterval:15 repeats:YES block:^(NSTimer *_Nonnull timer) {
@@ -76,8 +81,18 @@
 
 - (void)pollFable {
     __weak typeof(self) weakSelf = self;
-    [VPClaudeOAuthUsage pollWithCompletion:^(VPLimitRow *_Nullable row) {
-        weakSelf.fableRow = row;
+    [VPClaudeOAuthUsage pollWithCompletion:^(NSArray<VPLimitRow *> *rows) {
+        /* CEO-reported bug, 18-sep-2026: the card flickered between showing
+         * only "Sesión actual" and the full 3-row panel. Root cause — this
+         * fires every 60s, and ClaudeOAuthUsage completes with an EMPTY
+         * array on any transient hiccup (its own 60s throttle racing this
+         * timer, a 429, a network blip), which was overwriting the last good
+         * reading with nothing. An empty result means "no update this
+         * round," not "there is no data," so only a non-empty result may
+         * replace what's already showing. */
+        if (rows.count > 0) {
+            weakSelf.oauthWeeklyRows = rows;
+        }
         [weakSelf pushClaudeUpdate];
     }];
 }
@@ -91,14 +106,11 @@
         [rows addObject:reading.fiveHour];
         if (reading.isStale) [staleLabels addObject:reading.fiveHour.label];
     }
-    if (reading.sevenDay) {
-        [rows addObject:reading.sevenDay];
-        if (reading.isStale) [staleLabels addObject:reading.sevenDay.label];
-    }
-    if (self.fableRow) {
-        /* The Fable row comes from its own live poll each time it is shown,
-         * so it is never marked stale by the file's staleness window. */
-        [rows addObject:self.fableRow];
+    /* weekly_all + Fable, live from the OAuth call — never marked stale by
+     * the file's staleness window, since each is refreshed by its own poll
+     * rather than read off a snapshot file. */
+    if (self.oauthWeeklyRows.count > 0) {
+        [rows addObjectsFromArray:self.oauthWeeklyRows];
     }
     [self.window setClaudeCardRows:rows staleLabels:staleLabels];
 
@@ -143,6 +155,9 @@
 - (void)applicationDidFinishLaunching:(NSNotification *)notification {
     [NSApp setActivationPolicy:NSApplicationActivationPolicyAccessory];
 
+    /* No menu-bar icon (CEO feedback, 18-sep-2026: keeps the top bar
+     * uncluttered) -- the menu (Salir) lives on the pill itself now, via
+     * right-click, in VPNotchContentView.rightMouseDown:. */
     VPNotchWindowController *controller = [VPNotchWindowController new];
     self.windowController = controller;
     [controller show];

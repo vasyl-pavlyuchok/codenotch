@@ -63,17 +63,31 @@
 
 @end
 
+/* Same algorithm as gsd-statusline.js's fmtReset (the "↻4h" / "↻1d7h" the CEO
+ * already sees in his terminal statusline) -- CEO request, 18-sep-2026: show
+ * the same relative countdown in the hover card, alongside the absolute
+ * time, "para comprender rapido que a uno le faltan mas de 2 horas". */
+static NSString *VPRelativeResetLabel(NSDate *date, NSDate *now) {
+    NSInteger s = MAX(0, (NSInteger)[date timeIntervalSinceDate:now]);
+    NSInteger h = s / 3600;
+    NSInteger m = (s % 3600) / 60;
+    if (h >= 24) return [NSString stringWithFormat:@"%ldd%ldh", (long)(h / 24), (long)(h % 24)];
+    if (h >= 1) return [NSString stringWithFormat:@"%ldh", (long)h];
+    return [NSString stringWithFormat:@"%ldm", (long)m];
+}
+
 NSString *VPResetTimeLabel(NSDate *date, NSDate *now) {
+    NSString *relative = VPRelativeResetLabel(date, now);
     NSCalendar *calendar = [NSCalendar currentCalendar];
     if ([calendar isDate:date inSameDayAsDate:now]) {
         NSDateFormatter *f = [[NSDateFormatter alloc] init];
         f.locale = [[NSLocale alloc] initWithLocaleIdentifier:@"es_ES"];
         f.dateFormat = @"H:mm";
-        return [NSString stringWithFormat:@"Se reinicia a las %@", [f stringFromDate:date]];
+        return [NSString stringWithFormat:@"Se reinicia a las %@ (↻%@)", [f stringFromDate:date], relative];
     }
     NSDateFormatter *f = [[NSDateFormatter alloc] init];
     f.locale = [[NSLocale alloc] initWithLocaleIdentifier:@"es_ES"];
     f.dateFormat = @"EEE HH:mm";
     NSString *text = [[f stringFromDate:date] stringByReplacingOccurrencesOfString:@"." withString:@""];
-    return [NSString stringWithFormat:@"Se reinicia %@", text];
+    return [NSString stringWithFormat:@"Se reinicia %@ (↻%@)", text, relative];
 }

@@ -78,7 +78,7 @@ static BOOL gLoggedMissingFable = NO;
 
 #pragma mark - Poll
 
-+ (void)pollWithCompletion:(void (^)(VPLimitRow *_Nullable))completion {
++ (void)pollWithCompletion:(void (^)(NSArray<VPLimitRow *> *))completion {
     NSDate *now = [NSDate date];
 
     /* Atomic check-and-set of the throttle/backoff state, and snapshot of
@@ -97,14 +97,14 @@ static BOOL gLoggedMissingFable = NO;
         gLastAttempt = now;
     });
     if (shouldSkip) {
-        completion(nil);
+        completion(@[]);
         return;
     }
 
     NSDictionary *credential = [self readKeychainCredentialData];
     NSString *accessToken = credential[@"accessToken"];
     if (!accessToken.length) {
-        completion(nil);
+        completion(@[]);
         return;
     }
 
@@ -126,53 +126,69 @@ static BOOL gLoggedMissingFable = NO;
                     wait = MIN(ceiling, floorSec * pow(2.0, (double)exponent));
                     gBackoffUntil = [NSDate dateWithTimeIntervalSinceNow:wait];
                 });
-                dispatch_async(dispatch_get_main_queue(), ^{ completion(nil); });
+                dispatch_async(dispatch_get_main_queue(), ^{ completion(@[]); });
                 return;
             }
             dispatch_sync([self stateQueue], ^{ gConsecutive429 = 0; });
 
             if (error != nil || status < 200 || status >= 300 || data == nil) {
-                dispatch_async(dispatch_get_main_queue(), ^{ completion(nil); });
+                dispatch_async(dispatch_get_main_queue(), ^{ completion(@[]); });
                 return;
             }
 
             NSError *jsonError = nil;
             id payload = [NSJSONSerialization JSONObjectWithData:data options:0 error:&jsonError];
             if (![payload isKindOfClass:[NSDictionary class]]) {
-                dispatch_async(dispatch_get_main_queue(), ^{ completion(nil); });
+                dispatch_async(dispatch_get_main_queue(), ^{ completion(@[]); });
                 return;
             }
             NSArray *limits = ((NSDictionary *)payload)[@"limits"];
             if (![limits isKindOfClass:[NSArray class]]) {
-                dispatch_async(dispatch_get_main_queue(), ^{ completion(nil); });
+                dispatch_async(dispatch_get_main_queue(), ^{ completion(@[]); });
                 return;
             }
 
-            NSDictionary *fable = nil;
+            /* Confirmed live 18-sep-2026: `limits` holds one entry per kind —
+             * "session" (skipped here, VPClaudeUsageFile already covers the
+             * 5h row locally), "weekly_all" (this class's new second row),
+             * and "weekly_scoped" with scope.model.display_name == "Fable"
+             * (the third row, as before). Order matches the approved design:
+             * week-all-models before Fable. */
+            NSMutableArray<VPLimitRow *> *rows = [NSMutableArray array];
             for (id item in limits) {
                 if (![item isKindOfClass:[NSDictionary class]]) continue;
                 NSDictionary *limit = (NSDictionary *)item;
                 NSString *kind = [limit[@"kind"] isKindOfClass:[NSString class]] ? limit[@"kind"] : @"";
-                NSString *displayName = @"";
-                id scope = limit[@"scope"];
-                if ([scope isKindOfClass:[NSDictionary class]]) {
-                    id model = ((NSDictionary *)scope)[@"model"];
-                    if ([model isKindOfClass:[NSDictionary class]]) {
-                        id name = ((NSDictionary *)model)[@"display_name"];
-                        if ([name isKindOfClass:[NSString class]]) displayName = name;
-                    }
+                NSString *resetsAtText = [limit[@"resets_at"] isKindOfClass:[NSString class]] ? limit[@"resets_at"] : nil;
+                NSDate *resetsAt = resetsAtText ? [self parseISO8601:resetsAtText] : nil;
+                NSNumber *percentNum = [limit[@"percent"] isKindOfClass:[NSNumber class]] ? limit[@"percent"] : nil;
+                if (!resetsAt || !percentNum) continue;
+
+                if ([kind isEqualToString:@"weekly_all"]) {
+                    [rows addObject:[[VPLimitRow alloc] initWithLabel:@"Esta semana · todos los modelos"
+                                                           usedPercent:percentNum.doubleValue
+                                                              resetsAt:resetsAt]];
+                    continue;
                 }
-                if ([kind rangeOfString:@"fable" options:NSCaseInsensitiveSearch].location != NSNotFound
-                    || [displayName rangeOfString:@"fable" options:NSCaseInsensitiveSearch].location != NSNotFound) {
-                    fable = limit;
-                    break;
+                if ([kind isEqualToString:@"weekly_scoped"]) {
+                    NSString *displayName = @"";
+                    id scope = limit[@"scope"];
+                    if ([scope isKindOfClass:[NSDictionary class]]) {
+                        id model = ((NSDictionary *)scope)[@"model"];
+                        if ([model isKindOfClass:[NSDictionary class]]) {
+                            id name = ((NSDictionary *)model)[@"display_name"];
+                            if ([name isKindOfClass:[NSString class]]) displayName = name;
+                        }
+                    }
+                    if ([displayName rangeOfString:@"fable" options:NSCaseInsensitiveSearch].location != NSNotFound) {
+                        [rows addObject:[[VPLimitRow alloc] initWithLabel:@"Fable esta semana · límite propio"
+                                                               usedPercent:percentNum.doubleValue
+                                                                  resetsAt:resetsAt]];
+                    }
                 }
             }
 
-            NSString *resetsAtText = fable ? fable[@"resets_at"] : nil;
-            NSDate *resetsAt = [resetsAtText isKindOfClass:[NSString class]] ? [self parseISO8601:resetsAtText] : nil;
-
-            if (!fable || !resetsAt) {
+            if (rows.count == 0) {
                 __block BOOL shouldLog = NO;
                 dispatch_sync([self stateQueue], ^{
                     if (!gLoggedMissingFable) {
@@ -181,20 +197,40 @@ static BOOL gLoggedMissingFable = NO;
                     }
                 });
                 if (shouldLog) {
-                    fprintf(stderr, "codenotch-vp: no Fable window in /api/oauth/usage response — hiding the third bar\n");
+                    fprintf(stderr, "codenotch-vp: no weekly_all/weekly_scoped window in /api/oauth/usage response — hiding those bars\n");
                 }
-                dispatch_async(dispatch_get_main_queue(), ^{ completion(nil); });
-                return;
             }
-
-            NSNumber *percentNum = fable[@"percent"];
-            double percent = [percentNum isKindOfClass:[NSNumber class]] ? percentNum.doubleValue : 0;
-            VPLimitRow *row = [[VPLimitRow alloc] initWithLabel:@"Fable esta semana · límite propio"
-                                                     usedPercent:percent
-                                                        resetsAt:resetsAt];
-            dispatch_async(dispatch_get_main_queue(), ^{ completion(row); });
+            dispatch_async(dispatch_get_main_queue(), ^{ completion(rows); });
         }];
     [task resume];
+}
+
+#pragma mark - Plan label
+
++ (nullable NSString *)planLabel {
+    NSDictionary *credential = [self readKeychainCredentialData];
+    if (!credential) return nil;
+
+    /* "default_claude_max_5x" -> "Max 5x". Strips the constant prefix, then
+     * title-cases each remaining underscore-separated word; a multiplier
+     * like "5x" is left as-is since capitalizedString only touches letters. */
+    NSString *tier = credential[@"rateLimitTier"];
+    if ([tier isKindOfClass:[NSString class]] && tier.length > 0) {
+        NSString *stripped = tier;
+        NSString *prefix = @"default_claude_";
+        if ([stripped hasPrefix:prefix]) stripped = [stripped substringFromIndex:prefix.length];
+        NSMutableArray<NSString *> *words = [NSMutableArray array];
+        for (NSString *part in [stripped componentsSeparatedByString:@"_"]) {
+            if (part.length > 0) [words addObject:part.capitalizedString];
+        }
+        if (words.count > 0) return [words componentsJoinedByString:@" "];
+    }
+
+    NSString *subscriptionType = credential[@"subscriptionType"];
+    if ([subscriptionType isKindOfClass:[NSString class]] && subscriptionType.length > 0) {
+        return subscriptionType.capitalizedString;
+    }
+    return nil;
 }
 
 @end

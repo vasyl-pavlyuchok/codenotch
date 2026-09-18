@@ -1,11 +1,15 @@
 <?xml version="1.0" encoding="UTF-8"?>
 <!-- audience: machine -->
+<!-- Installs to /Applications/Codenotch VP.app (CEO request, 18-sep-2026:
+     "quiero que viva donde todas las apps" — moved here from
+     ~/Applications, which he couldn't find in Finder since it's hidden from
+     the sidebar by default). /Applications is group-writable by `admin` on
+     this Mac, so install-vp-objc.sh can write there without sudo. -->
 <!-- Same Label/binary path as Scripts/io.techbooster.codenotch-vp.plist (the
-     Swift build's LaunchAgent) because both builds install the app bundle to
-     the same ~/Applications/Codenotch VP.app destination — only the source
-     tree differs (build-objc/ here vs build/ there). Installing this one
-     (via install-vp-objc.sh) simply means the binary at that path was
-     produced by clang, not swiftc. -->
+     Swift build's LaunchAgent) because both builds install to the same
+     destination — only the source tree differs (build-objc/ here vs build/
+     there). Installing this one (via install-vp-objc.sh) simply means the
+     binary at that path was produced by clang, not swiftc. -->
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <plist version="1.0">
 <dict>
@@ -13,12 +17,19 @@
 	<string>io.techbooster.codenotch-vp</string>
 	<key>ProgramArguments</key>
 	<array>
-		<string>/Users/vasylpavlyuchok/Applications/Codenotch VP.app/Contents/MacOS/Codenotch VP</string>
+		<string>/Applications/Codenotch VP.app/Contents/MacOS/Codenotch VP</string>
 	</array>
 	<key>RunAtLoad</key>
 	<true/>
+	<!-- Solo se relanza sola si CRASHEA (salida no exitosa) -- CEO 18-sep-2026:
+	     con KeepAlive=true a secas, pulsar "Salir de Codenotch VP" (salida
+	     limpia, exit 0) la reabria al instante, dejando el menu de Salir sin
+	     efecto real. -->
 	<key>KeepAlive</key>
-	<true/>
+	<dict>
+		<key>SuccessfulExit</key>
+		<false/>
+	</dict>
 	<key>ProcessType</key>
 	<string>Interactive</string>
 	<key>StandardOutPath</key>
