@@ -23,10 +23,13 @@
 
 @interface VPUsageCoordinator ()
 @property (nonatomic, weak) VPNotchWindowController *window;
-/* weekly_all + Fable, straight from the live OAuth usage call — see
- * ClaudeOAuthUsage.h for why this replaced the local file's dead
- * (never-written) seven_day field. */
-@property (nonatomic, copy) NSArray<VPLimitRow *> *oauthWeeklyRows;
+/* session + weekly_all + Fable, straight from the live OAuth usage call —
+ * see ClaudeOAuthUsage.h for why this replaced the local file (dead:
+ * nothing writes it, so its frozen session resets_at eventually falls into
+ * the past, and it never had weekly_all at all). */
+@property (nonatomic, copy) NSArray<VPLimitRow *> *oauthRows;
+/* Fallback only, used for the session row until the first successful OAuth
+ * poll lands (e.g. right at launch) — see pushClaudeUpdate. */
 @property (nonatomic, strong, nullable) VPClaudeUsageReading *claudeFileReading;
 @property (nonatomic, strong, nullable) VPLimitRow *codexRow;
 @property (nonatomic) BOOL codexInstalled;
@@ -38,7 +41,7 @@
     self = [super init];
     if (self) {
         _window = window;
-        _oauthWeeklyRows = @[];
+        _oauthRows = @[];
     }
     return self;
 }
@@ -49,6 +52,7 @@
     [self refreshCodex];
     [self pollFable];
     [self.window setClaudePlanLabel:[VPClaudeOAuthUsage planLabel]];
+    [self.window setClaudeAccountEmail:[VPClaudeOAuthUsage accountEmail]];
 
     __weak typeof(self) weakSelf = self;
     [NSTimer scheduledTimerWithTimeInterval:15 repeats:YES block:^(NSTimer *_Nonnull timer) {
@@ -70,13 +74,24 @@
     [self pushClaudeUpdate];
 }
 
+/* The live OAuth "Sesión actual" row, if the last successful poll had one. */
+- (nullable VPLimitRow *)oauthSessionRow {
+    for (VPLimitRow *row in self.oauthRows) {
+        if ([row.label isEqualToString:@"Sesión actual"]) return row;
+    }
+    return nil;
+}
+
 - (void)refreshSessionState {
     VPSessionFlags *flags = [VPSessionState currentClaudeFlags];
-    NSNumber *headline = self.claudeFileReading.fiveHour ? @(self.claudeFileReading.fiveHour.usedPercent) : nil;
+    VPLimitRow *sessionRow = self.oauthSessionRow;
+    NSNumber *headline = sessionRow ? @(sessionRow.usedPercent)
+        : (self.claudeFileReading.fiveHour ? @(self.claudeFileReading.fiveHour.usedPercent) : nil);
+    BOOL isStale = sessionRow ? NO : self.claudeFileReading.isStale;
     [self.window updateClaudeWithHeadlinePercent:headline
                                         isWorking:flags.isWorking
                                         isWaiting:flags.isWaiting
-                                          isStale:self.claudeFileReading.isStale];
+                                          isStale:isStale];
 }
 
 - (void)pollFable {
@@ -91,7 +106,7 @@
          * round," not "there is no data," so only a non-empty result may
          * replace what's already showing. */
         if (rows.count > 0) {
-            weakSelf.oauthWeeklyRows = rows;
+            weakSelf.oauthRows = rows;
         }
         [weakSelf pushClaudeUpdate];
     }];
@@ -101,25 +116,31 @@
     NSMutableArray<VPLimitRow *> *rows = [NSMutableArray array];
     NSMutableSet<NSString *> *staleLabels = [NSMutableSet set];
 
+    /* Session row: prefer the live OAuth reading (never stale — refreshed by
+     * its own 60s poll) over the local file, which is only a fallback until
+     * the first successful poll lands (e.g. right at launch). */
+    VPLimitRow *sessionRow = self.oauthSessionRow;
     VPClaudeUsageReading *reading = self.claudeFileReading;
-    if (reading.fiveHour) {
+    if (sessionRow) {
+        [rows addObject:sessionRow];
+    } else if (reading.fiveHour) {
         [rows addObject:reading.fiveHour];
         if (reading.isStale) [staleLabels addObject:reading.fiveHour.label];
     }
-    /* weekly_all + Fable, live from the OAuth call — never marked stale by
-     * the file's staleness window, since each is refreshed by its own poll
-     * rather than read off a snapshot file. */
-    if (self.oauthWeeklyRows.count > 0) {
-        [rows addObjectsFromArray:self.oauthWeeklyRows];
+    /* weekly_all + Fable ride along in the same oauthRows array. */
+    for (VPLimitRow *row in self.oauthRows) {
+        if (row != sessionRow) [rows addObject:row];
     }
     [self.window setClaudeCardRows:rows staleLabels:staleLabels];
 
     VPSessionFlags *flags = [VPSessionState currentClaudeFlags];
-    NSNumber *headline = reading.fiveHour ? @(reading.fiveHour.usedPercent) : nil;
+    NSNumber *headline = sessionRow ? @(sessionRow.usedPercent)
+        : (reading.fiveHour ? @(reading.fiveHour.usedPercent) : nil);
+    BOOL isStale = sessionRow ? NO : reading.isStale;
     [self.window updateClaudeWithHeadlinePercent:headline
                                         isWorking:flags.isWorking
                                         isWaiting:flags.isWaiting
-                                          isStale:reading.isStale];
+                                          isStale:isStale];
 }
 
 - (void)refreshCodex {

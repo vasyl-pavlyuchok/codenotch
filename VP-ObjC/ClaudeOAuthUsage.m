@@ -149,11 +149,15 @@ static BOOL gLoggedMissingFable = NO;
             }
 
             /* Confirmed live 18-sep-2026: `limits` holds one entry per kind —
-             * "session" (skipped here, VPClaudeUsageFile already covers the
-             * 5h row locally), "weekly_all" (this class's new second row),
-             * and "weekly_scoped" with scope.model.display_name == "Fable"
-             * (the third row, as before). Order matches the approved design:
-             * week-all-models before Fable. */
+             * "session" (the 5h row -- CEO-reported bug, 18-sep-2026: the
+             * local file (VPClaudeUsageFile) that used to cover this row is
+             * dead, nothing has written it in over a day, so its frozen
+             * resets_at drifted into the past and the relative countdown
+             * showed "↻0m" instead of a real value; this live call replaces
+             * it as the row's source of truth), "weekly_all" (the second
+             * row), and "weekly_scoped" with scope.model.display_name ==
+             * "Fable" (the third row). The API already returns them in this
+             * same order, matching the approved design. */
             NSMutableArray<VPLimitRow *> *rows = [NSMutableArray array];
             for (id item in limits) {
                 if (![item isKindOfClass:[NSDictionary class]]) continue;
@@ -164,6 +168,12 @@ static BOOL gLoggedMissingFable = NO;
                 NSNumber *percentNum = [limit[@"percent"] isKindOfClass:[NSNumber class]] ? limit[@"percent"] : nil;
                 if (!resetsAt || !percentNum) continue;
 
+                if ([kind isEqualToString:@"session"]) {
+                    [rows addObject:[[VPLimitRow alloc] initWithLabel:@"Sesión actual"
+                                                           usedPercent:percentNum.doubleValue
+                                                              resetsAt:resetsAt]];
+                    continue;
+                }
                 if ([kind isEqualToString:@"weekly_all"]) {
                     [rows addObject:[[VPLimitRow alloc] initWithLabel:@"Esta semana · todos los modelos"
                                                            usedPercent:percentNum.doubleValue
@@ -231,6 +241,20 @@ static BOOL gLoggedMissingFable = NO;
         return subscriptionType.capitalizedString;
     }
     return nil;
+}
+
+#pragma mark - Account email
+
++ (nullable NSString *)accountEmail {
+    NSString *path = [NSHomeDirectory() stringByAppendingString:@"/.claude.json"];
+    NSData *data = [NSData dataWithContentsOfFile:path];
+    if (!data) return nil;
+    id obj = [NSJSONSerialization JSONObjectWithData:data options:0 error:nil];
+    if (![obj isKindOfClass:[NSDictionary class]]) return nil;
+    id account = ((NSDictionary *)obj)[@"oauthAccount"];
+    if (![account isKindOfClass:[NSDictionary class]]) return nil;
+    NSString *email = ((NSDictionary *)account)[@"emailAddress"];
+    return [email isKindOfClass:[NSString class]] && email.length > 0 ? email : nil;
 }
 
 @end

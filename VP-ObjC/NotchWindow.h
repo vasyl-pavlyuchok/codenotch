@@ -126,6 +126,10 @@ CGPathRef VPRoundedRectPathCreate(CGSize size, CGFloat radius);
 /* Plan name shown right-aligned on the title row, e.g. "Max 5x" (CEO
  * request, 18-sep-2026). nil draws nothing -- Codex has no such concept. */
 @property (nonatomic, copy, nullable) NSString *subtitle;
+/* Account email, its own line right under the title (CEO request,
+ * 18-sep-2026: "por si tuviera mas de una cuenta"). nil draws nothing and
+ * costs no vertical space -- Codex has no such concept. */
+@property (nonatomic, copy, nullable) NSString *accountEmail;
 @property (nonatomic) VPGlyphKind glyph;
 @property (nonatomic, copy) NSArray<VPLimitRow *> *rows;
 /* Labels (VPLimitRow.label) of rows that should render as stale/dimmed. */
@@ -138,8 +142,9 @@ CGPathRef VPRoundedRectPathCreate(CGSize size, CGFloat radius);
 /* Height accounts for each row's real label/reset-time text: a row whose
  * label is long enough to collide with its reset time (e.g. "Fable esta
  * semana · límite propio") stacks the reset time onto its own line instead
- * of overlapping it — CEO-reported bug, 18-sep-2026. */
-+ (CGFloat)heightForRows:(NSArray<VPLimitRow *> *)rows hasEmptyMessage:(BOOL)hasEmptyMessage;
+ * of overlapping it — CEO-reported bug, 18-sep-2026. `hasEmailLine` must
+ * match whether `accountEmail` will be set before this card is shown. */
++ (CGFloat)heightForRows:(NSArray<VPLimitRow *> *)rows hasEmptyMessage:(BOOL)hasEmptyMessage hasEmailLine:(BOOL)hasEmailLine;
 
 /* How far the pointer triangle reaches past the card's own right edge. The
  * view's frame is cardWidth + pointerReach wide so the triangle has room to
@@ -205,6 +210,9 @@ CGPathRef VPRoundedRectPathCreate(CGSize size, CGFloat radius);
 /* The account's plan, e.g. "Max 5x" (CEO request, 18-sep-2026), shown on the
  * Claude card's title row. nil hides it. */
 - (void)setClaudePlanLabel:(nullable NSString *)planLabel;
+/* The logged-in account's email, e.g. "vasyl@techbooster.io" (CEO request,
+ * 18-sep-2026), shown on its own line under the Claude card's title. */
+- (void)setClaudeAccountEmail:(nullable NSString *)accountEmail;
 - (void)setCodexCardRows:(NSArray<VPLimitRow *> *)rows installed:(BOOL)installed;
 
 @end

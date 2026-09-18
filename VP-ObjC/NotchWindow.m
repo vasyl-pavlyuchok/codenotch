@@ -346,9 +346,9 @@ static BOOL VPRowNeedsStackedReset(VPLimitRow *row, CGFloat contentWidth) {
     return (labelW + kVPRowLabelResetGap + resetW) > contentWidth;
 }
 
-+ (CGFloat)heightForRows:(NSArray<VPLimitRow *> *)rows hasEmptyMessage:(BOOL)hasEmptyMessage {
++ (CGFloat)heightForRows:(NSArray<VPLimitRow *> *)rows hasEmptyMessage:(BOOL)hasEmptyMessage hasEmailLine:(BOOL)hasEmailLine {
     CGFloat top = VPLayout.cardPaddingTop;
-    CGFloat title = VPLayout.cardTitleHeight;
+    CGFloat title = VPLayout.cardTitleHeight + (hasEmailLine ? VPLayout.cardRowLabelHeight : 0);
     if (hasEmptyMessage) {
         return top + title + VPLayout.cardRowSpacingTop + VPLayout.cardRowLabelHeight + VPLayout.cardPaddingBottom;
     }
@@ -438,6 +438,18 @@ static BOOL VPRowNeedsStackedReset(VPLimitRow *row, CGFloat contentWidth) {
         }
     }
     y += VPLayout.cardTitleHeight;
+
+    /* Account email, its own line under the title (CEO request, 18-sep-2026:
+     * "por si tuviera mas de una cuenta"). Height for this line is already
+     * reserved in heightForRows:hasEmailLine: -- keep both in sync. */
+    if (self.accountEmail.length > 0) {
+        NSDictionary *emailAttrs = @{
+            NSFontAttributeName: [NSFont systemFontOfSize:9],
+            NSForegroundColorAttributeName: [VPPalette textSecondary]
+        };
+        [self.accountEmail drawAtPoint:CGPointMake(x, y) withAttributes:emailAttrs];
+        y += VPLayout.cardRowLabelHeight;
+    }
 
     if (self.emptyMessage) {
         y += VPLayout.cardRowSpacingTop;
@@ -780,6 +792,7 @@ static BOOL VPRowNeedsStackedReset(VPLimitRow *row, CGFloat contentWidth) {
 @property (nonatomic, copy) NSArray<VPLimitRow *> *claudeRows;
 @property (nonatomic, copy) NSSet<NSString *> *claudeStaleLabels;
 @property (nonatomic, copy, nullable) NSString *claudePlanLabel;
+@property (nonatomic, copy, nullable) NSString *claudeAccountEmail;
 @property (nonatomic, copy) NSArray<VPLimitRow *> *codexRows;
 @property (nonatomic) BOOL codexInstalled;
 /* Auto-hide (CEO request, 18-sep-2026: "de la misma manera en la que
@@ -856,7 +869,7 @@ static NSTimeInterval const kVPHideDelay = 0.35; /* grace period before sliding 
         _panel.alphaValue = [defaults doubleForKey:kVPOpacityDefaultsKey];
 
         CGSize tooltipSize = CGSizeMake(VPLayout.cardWidth + VPTooltipCardView.pointerReach,
-                                         [VPTooltipCardView heightForRows:@[] hasEmptyMessage:NO]);
+                                         [VPTooltipCardView heightForRows:@[] hasEmptyMessage:NO hasEmailLine:NO]);
         _tooltipView = [[VPTooltipCardView alloc] initWithFrame:CGRectMake(0, 0, tooltipSize.width, tooltipSize.height)];
         _tooltipPanel = [[NSPanel alloc] initWithContentRect:CGRectMake(0, 0, tooltipSize.width, tooltipSize.height)
                                                      styleMask:(NSWindowStyleMaskBorderless | NSWindowStyleMaskNonactivatingPanel)
@@ -1186,14 +1199,16 @@ static NSTimeInterval const kVPHideDelay = 0.35; /* grace period before sliding 
     if (kind == VPGlyphKindClaude) {
         self.tooltipView.title = @"Uso de Claude";
         self.tooltipView.subtitle = self.claudePlanLabel;
+        self.tooltipView.accountEmail = self.claudeAccountEmail;
         self.tooltipView.glyph = VPGlyphKindClaude;
         self.tooltipView.rows = self.claudeRows;
         self.tooltipView.staleRowLabels = self.claudeStaleLabels;
         self.tooltipView.emptyMessage = self.claudeRows.count == 0 ? @"Esperando la primera lectura…" : nil;
-        [self showTooltipAnchoredAtCell:self.contentView.claudeCell rows:self.claudeRows hasEmptyMessage:self.claudeRows.count == 0];
+        [self showTooltipAnchoredAtCell:self.contentView.claudeCell rows:self.claudeRows hasEmptyMessage:self.claudeRows.count == 0 hasEmailLine:self.claudeAccountEmail.length > 0];
     } else {
         self.tooltipView.title = @"Uso de Codex";
         self.tooltipView.subtitle = nil;
+        self.tooltipView.accountEmail = nil;
         self.tooltipView.glyph = VPGlyphKindOpenAI;
         self.tooltipView.rows = self.codexRows;
         self.tooltipView.staleRowLabels = [NSSet set];
@@ -1201,12 +1216,12 @@ static NSTimeInterval const kVPHideDelay = 0.35; /* grace period before sliding 
             ? (self.codexRows.count == 0 ? @"Esperando la primera lectura…" : nil)
             : @"Codex no está instalado";
         BOOL hasEmpty = !self.codexInstalled || self.codexRows.count == 0;
-        [self showTooltipAnchoredAtCell:self.contentView.codexCell rows:self.codexRows hasEmptyMessage:hasEmpty];
+        [self showTooltipAnchoredAtCell:self.contentView.codexCell rows:self.codexRows hasEmptyMessage:hasEmpty hasEmailLine:NO];
     }
 }
 
-- (void)showTooltipAnchoredAtCell:(VPProviderCellView *)anchorCell rows:(NSArray<VPLimitRow *> *)rows hasEmptyMessage:(BOOL)hasEmptyMessage {
-    CGFloat height = [VPTooltipCardView heightForRows:rows hasEmptyMessage:hasEmptyMessage];
+- (void)showTooltipAnchoredAtCell:(VPProviderCellView *)anchorCell rows:(NSArray<VPLimitRow *> *)rows hasEmptyMessage:(BOOL)hasEmptyMessage hasEmailLine:(BOOL)hasEmailLine {
+    CGFloat height = [VPTooltipCardView heightForRows:rows hasEmptyMessage:hasEmptyMessage hasEmailLine:hasEmailLine];
     CGFloat width = VPLayout.cardWidth + VPTooltipCardView.pointerReach;
     self.tooltipView.frame = CGRectMake(0, 0, width, height);
 
