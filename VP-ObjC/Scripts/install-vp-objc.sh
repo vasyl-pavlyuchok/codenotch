@@ -42,3 +42,8 @@ echo "Synced LaunchAgent: $PLIST_DST"
 launchctl unload "$PLIST_DST" >/dev/null 2>&1 || true
 launchctl load "$PLIST_DST"
 echo "Loaded. Codenotch VP (Objective-C build) should appear on the right edge of the main screen."
+echo
+echo "If it keeps asking for your keychain password every so often, that is a"
+echo "known issue (see README-VP.md, 'Known issue: repeated keychain password"
+echo "prompts') -- fix it once with:"
+echo "  $REPO_DIR/VP-ObjC/Scripts/fix-keychain-partition-list.sh"

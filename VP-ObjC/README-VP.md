@@ -134,6 +134,41 @@ capped at 15 minutes). Codex reads `~/.codex/auth.json` only if that folder
 exists; on this Mac it does not, so the ring shows grey with "—" and the
 card says "Codex no está instalado" — no data is invented.
 
+## Known issue: repeated keychain password prompts (22-sep-2026)
+
+Codenotch VP polls the `Claude Code-credentials` keychain item read-only
+every 60s (`ClaudeOAuthUsage.m`, `readKeychainCredentialData`). It is not
+the one causing the repeated "Codenotch VP wants to access key..." password
+dialog you may see — three earlier fixes attacked the app itself (stable
+code-signing identity, `security set-key-partition-list` on the *signing*
+key, "Allow all applications" on the item's classic ACL, Hardened Runtime)
+and each one held for a while, then the dialog came back anyway. Confirmed
+root cause: the **`claude` CLI itself rewrites this same keychain item**
+whenever it refreshes your OAuth token (confirmed by correlating the
+item's `mdat` and a `security[pid]` keychain-commit log entry with the next
+prompt, seconds later, each time). Rewriting the item's value resets its
+classic ACL — including "Allow all applications" — regardless of what
+Codenotch VP does. `kSecUseAuthenticationUIFail` (already set on the query,
+line ~40 of `ClaudeOAuthUsage.m`) cannot suppress this: that flag only
+silences Touch ID / passcode prompts on protected keys, not this "app wants
+to access this generic-password item" ACL dialog — there is no code-side
+flag that guarantees it stays silent.
+
+**Fix**: run `VP-ObjC/Scripts/fix-keychain-partition-list.sh` once, on any
+Mac, any time after install (safe to re-run). It sets a partition-list ACL
+on the item instead of the classic per-app "trusted applications" list —
+the same mechanism Homebrew/Docker/1Password use for exactly this class of
+bug, because it is checked against the writer's code-signing identity
+rather than a static list that gets discarded when the item is rewritten.
+It will prompt for your login keychain password via the normal macOS
+dialog — that is expected, not Codenotch nagging you.
+
+If this ever needs re-diagnosing (e.g. it turns out the partition-list
+approach also gets reset), don't re-guess blind — capture `log stream`
+live filtered on the exact item/process, not `log show` after the fact;
+that is what finally nailed this one down. Full incident history:
+`decisions/log.md` in the `tb-os` repo, entries dated 17/18/22-sep-2026.
+
 ## What is out of scope (same as the Swift version's brief)
 
 Mobile pairing, auto-update, 80%/100% notifications, Accessibility
