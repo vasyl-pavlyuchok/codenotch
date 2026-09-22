@@ -95,6 +95,14 @@
 }
 
 - (void)pollFable {
+    /* CEO-reported bug, 22-sep-2026: the plan label ("Max 5x", "Pro"...) was
+     * only ever read once in -start, so a plan change on the account (e.g.
+     * downgrading from Max to Pro) never showed up without quitting and
+     * relaunching the app. It reads the same keychain item this poll
+     * already hits every 60s, so riding along here is free — no new timer. */
+    [self.window setClaudePlanLabel:[VPClaudeOAuthUsage planLabel]];
+    [self.window setClaudeAccountEmail:[VPClaudeOAuthUsage accountEmail]];
+
     __weak typeof(self) weakSelf = self;
     [VPClaudeOAuthUsage pollWithCompletion:^(NSArray<VPLimitRow *> *rows) {
         /* CEO-reported bug, 18-sep-2026: the card flickered between showing
