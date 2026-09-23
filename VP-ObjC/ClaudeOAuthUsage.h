@@ -53,12 +53,11 @@ NS_ASSUME_NONNULL_BEGIN
 + (void)pollWithCompletion:(void (^)(NSArray<VPLimitRow *> *rows))completion;
 
 /* The account's plan, e.g. "Max 5x" or "Pro" (CEO request, 18-sep-2026: show
- * the subscription type in the Claude hover card). Read straight from the
- * same local keychain credential this class already reads for the OAuth
- * call — `subscriptionType` and `rateLimitTier` sit right next to
- * `accessToken` in that blob, so this needs no network call of its own and
- * can't be rate-limited. nil if the keychain item is missing or has neither
- * field. */
+ * the subscription type in the Claude hover card). Read first from
+ * ~/.claude.json's oauthAccount (rewritten by the CLI on every login, no
+ * keychain, no network); falls back to the keychain credential's
+ * `rateLimitTier`/`subscriptionType`, then to the last value really read.
+ * nil only if none of those ever produced a plan. */
 + (nullable NSString *)planLabel;
 
 /* The logged-in account's email, e.g. "vasyl@techbooster.io" (CEO request,

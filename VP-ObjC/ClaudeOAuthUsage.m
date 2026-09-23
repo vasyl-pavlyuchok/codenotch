@@ -340,27 +340,73 @@ static NSString *const kVPPlanLabelDefaultsKey = @"VPLastKnownPlanLabel";
     return [self cachedPlanLabel];
 }
 
+/* "default_claude_max_5x" -> "Max 5x", "claude_pro" -> "Pro". Strips the
+ * constant prefix, then upper-cases only the FIRST letter of each remaining
+ * underscore-separated word. Not capitalizedString: it treats the digit as a
+ * word boundary and turned "5x" into "5X" (seen on screen 23-sep-2026).
+ * nil for anything that is not a string or leaves nothing behind. */
++ (nullable NSString *)labelFromTier:(nullable id)tier {
+    if (![tier isKindOfClass:[NSString class]] || [tier length] == 0) return nil;
+    NSString *stripped = tier;
+    for (NSString *prefix in @[@"default_claude_", @"claude_"]) {
+        if ([stripped hasPrefix:prefix]) {
+            stripped = [stripped substringFromIndex:prefix.length];
+            break;
+        }
+    }
+    NSMutableArray<NSString *> *words = [NSMutableArray array];
+    for (NSString *part in [stripped componentsSeparatedByString:@"_"]) {
+        if (part.length > 0) {
+            [words addObject:[[part substringToIndex:1].uppercaseString
+                              stringByAppendingString:[part substringFromIndex:1]]];
+        }
+    }
+    return words.count > 0 ? [words componentsJoinedByString:@" "] : nil;
+}
+
+/* CEO-reported bug, 23-sep-2026: after a /logout + /login the plan label
+ * stayed on the old plan forever. The login rewrites the keychain item, which
+ * resets its partition list and locks this app out (see
+ * +disableKeychainUserInteraction), so +planLabel fell back to the cached
+ * value every time. ~/.claude.json carries the same plan in
+ * oauthAccount.organizationRateLimitTier / organizationType, the CLI rewrites
+ * it on every login, and reading it needs no keychain and no network. It is
+ * now the primary source; the keychain is only a fallback. */
++ (nullable NSString *)planLabelFromClaudeConfig {
+    NSString *path = [NSHomeDirectory() stringByAppendingString:@"/.claude.json"];
+    NSData *data = [NSData dataWithContentsOfFile:path];
+    if (!data) return nil;
+    id obj = [NSJSONSerialization JSONObjectWithData:data options:0 error:nil];
+    if (![obj isKindOfClass:[NSDictionary class]]) return nil;
+    id account = ((NSDictionary *)obj)[@"oauthAccount"];
+    if (![account isKindOfClass:[NSDictionary class]]) return nil;
+
+    /* The rate-limit tier carries the multiplier ("Max 5x" vs "Max 20x"), so
+     * it wins when it names a Max plan. Other tiers are not self-describing
+     * (a Pro account's tier is not "..._pro"), so for those the
+     * organization type ("claude_pro" -> "Pro") is the honest label. */
+    for (NSString *key in @[@"userRateLimitTier", @"organizationRateLimitTier"]) {
+        id tier = account[key];
+        if ([tier isKindOfClass:[NSString class]] && [tier containsString:@"max"]) {
+            NSString *label = [self labelFromTier:tier];
+            if (label) return label;
+        }
+    }
+    return [self labelFromTier:account[@"organizationType"]];
+}
+
 + (nullable NSString *)planLabel {
+    NSString *fromConfig = [self planLabelFromClaudeConfig];
+    if (fromConfig) return [self rememberPlanLabel:fromConfig];
+
     NSDictionary *credential = [self readKeychainCredentialData];
     /* Keychain unreadable (partition list reset by the CLI's token refresh,
      * breaker open, item missing...). Fall back to the last value we really
      * read rather than emptying the field on the user. */
     if (!credential) return [self cachedPlanLabel];
 
-    /* "default_claude_max_5x" -> "Max 5x". Strips the constant prefix, then
-     * title-cases each remaining underscore-separated word; a multiplier
-     * like "5x" is left as-is since capitalizedString only touches letters. */
-    NSString *tier = credential[@"rateLimitTier"];
-    if ([tier isKindOfClass:[NSString class]] && tier.length > 0) {
-        NSString *stripped = tier;
-        NSString *prefix = @"default_claude_";
-        if ([stripped hasPrefix:prefix]) stripped = [stripped substringFromIndex:prefix.length];
-        NSMutableArray<NSString *> *words = [NSMutableArray array];
-        for (NSString *part in [stripped componentsSeparatedByString:@"_"]) {
-            if (part.length > 0) [words addObject:part.capitalizedString];
-        }
-        if (words.count > 0) return [self rememberPlanLabel:[words componentsJoinedByString:@" "]];
-    }
+    NSString *fromTier = [self labelFromTier:credential[@"rateLimitTier"]];
+    if (fromTier) return [self rememberPlanLabel:fromTier];
 
     NSString *subscriptionType = credential[@"subscriptionType"];
     if ([subscriptionType isKindOfClass:[NSString class]] && subscriptionType.length > 0) {
