@@ -43,7 +43,9 @@ launchctl unload "$PLIST_DST" >/dev/null 2>&1 || true
 launchctl load "$PLIST_DST"
 echo "Loaded. Codenotch VP (Objective-C build) should appear on the right edge of the main screen."
 echo
-echo "If it keeps asking for your keychain password every so often, that is a"
-echo "known issue (see README-VP.md, 'Known issue: repeated keychain password"
-echo "prompts') -- fix it once with:"
-echo "  $REPO_DIR/VP-ObjC/Scripts/fix-keychain-partition-list.sh"
+echo "It will never show a keychain password prompt (SecKeychainSetUserInteractionAllowed"
+echo "is called at launch, see README-VP.md) -- nothing extra to run for that."
+echo
+echo "One more step for the session/weekly rows to show real numbers instead of staying"
+echo "empty: wire the status line sink once with:"
+echo "  $REPO_DIR/Scripts/install-statusline-sink.sh"

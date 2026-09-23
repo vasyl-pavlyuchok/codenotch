@@ -256,40 +256,22 @@ and the same 429 backoff curve (60s, doubling, capped at 15 minutes). Since
 exists; on this Mac it does not, so the ring shows grey with "—" and the
 card says "Codex no está instalado" — no data is invented.
 
-## Known issue: repeated keychain password prompts (22-sep-2026)
+## ⚠️ Superseded fix, kept only as a historical warning
 
-Codenotch VP polls the `Claude Code-credentials` keychain item read-only
-every 60s (`ClaudeOAuthUsage.m`, `readKeychainCredentialData`). It is not
-the one causing the repeated "Codenotch VP wants to access key..." password
-dialog you may see — three earlier fixes attacked the app itself (stable
-code-signing identity, `security set-key-partition-list` on the *signing*
-key, "Allow all applications" on the item's classic ACL, Hardened Runtime)
-and each one held for a while, then the dialog came back anyway. Confirmed
-root cause: the **`claude` CLI itself rewrites this same keychain item**
-whenever it refreshes your OAuth token (confirmed by correlating the
-item's `mdat` and a `security[pid]` keychain-commit log entry with the next
-prompt, seconds later, each time). Rewriting the item's value resets its
-classic ACL — including "Allow all applications" — regardless of what
-Codenotch VP does. `kSecUseAuthenticationUIFail` (already set on the query,
-line ~40 of `ClaudeOAuthUsage.m`) cannot suppress this: that flag only
-silences Touch ID / passcode prompts on protected keys, not this "app wants
-to access this generic-password item" ACL dialog — there is no code-side
-flag that guarantees it stays silent.
-
-**Fix**: run `VP-ObjC/Scripts/fix-keychain-partition-list.sh` once, on any
-Mac, any time after install (safe to re-run). It sets a partition-list ACL
-on the item instead of the classic per-app "trusted applications" list —
-the same mechanism Homebrew/Docker/1Password use for exactly this class of
-bug, because it is checked against the writer's code-signing identity
-rather than a static list that gets discarded when the item is rewritten.
-It will prompt for your login keychain password via the normal macOS
-dialog — that is expected, not Codenotch nagging you.
-
-If this ever needs re-diagnosing (e.g. it turns out the partition-list
-approach also gets reset), don't re-guess blind — capture `log stream`
-live filtered on the exact item/process, not `log show` after the fact;
-that is what finally nailed this one down. Full incident history:
-`decisions/log.md` in the `tb-os` repo, entries dated 17/18/22-sep-2026.
+An earlier version of this README (22-sep-2026) told you to run a script
+called `fix-keychain-partition-list.sh`, setting the item's partition list
+to `apple-tool:,apple:,codesign:`. **Do not do this — it was measured the
+following night to make the dialog fire on almost every 60-second poll
+instead of occasionally.** The script has been deleted from this repo. The
+real fix — the one actually shipping, verified with 1362 consecutive
+keychain failures and 0 dialogs over a 40-minute live soak — is
+`SecKeychainSetUserInteractionAllowed(FALSE)`, built into the app itself
+(see "The password dialog — root cause and fix" above). There is nothing to
+run after install; a fresh build from this branch already has it. If you
+ever see advice anywhere (an old handoff, an old chat, an old memory note)
+pointing at a keychain/partition-list *script* for this app, it is stale —
+trust this file and `decisions/log.md` in `tb-os` (search "Codenotch VP")
+over anything else.
 
 ## What is out of scope (same as the Swift version's brief)
 
