@@ -33,6 +33,8 @@
 @property (nonatomic, strong, nullable) VPClaudeUsageReading *claudeFileReading;
 @property (nonatomic, strong, nullable) VPLimitRow *codexRow;
 @property (nonatomic) BOOL codexInstalled;
+/* Last card shape written to stderr, so the same shape is not logged twice. */
+@property (nonatomic, copy, nullable) NSString *lastLoggedCardShape;
 @end
 
 @implementation VPUsageCoordinator
@@ -187,6 +189,28 @@ static const NSTimeInterval kVPOAuthPollInterval = 15 * 60;
     }];
 }
 
+/* One line on stderr (so it lands in /tmp/codenotch-vp.err.log) whenever the
+ * SHAPE of the card changes — a row appearing, disappearing, or going stale.
+ * Not per-refresh chatter: percentages move constantly and logging those
+ * would drown the file.
+ *
+ * This exists because the 23-sep-2026 rework moved rows 1 and 2 off the
+ * keychain and onto a file, and there was no way to tell from outside the app
+ * whether the rows were actually being filled — "it compiled" is not evidence
+ * that the card renders. Now there is a record. */
+- (void)logCardRowsIfChanged:(NSArray<VPLimitRow *> *)rows
+                 staleLabels:(NSSet<NSString *> *)staleLabels {
+    NSMutableArray<NSString *> *parts = [NSMutableArray array];
+    for (VPLimitRow *row in rows) {
+        [parts addObject:[NSString stringWithFormat:@"%@%@",
+                          row.label, [staleLabels containsObject:row.label] ? @" (stale)" : @""]];
+    }
+    NSString *shape = parts.count > 0 ? [parts componentsJoinedByString:@" | "] : @"(no rows)";
+    if ([shape isEqualToString:self.lastLoggedCardShape]) return;
+    self.lastLoggedCardShape = shape;
+    fprintf(stderr, "codenotch-vp: Claude card rows -> %s\n", shape.UTF8String);
+}
+
 /* Builds the three-row Claude card in the approved order. 23-sep-2026: rows 1
  * and 2 now come from ~/.claude/state/usage-5h.json (no keychain, no network)
  * and only row 3 still depends on the OAuth call. When the keychain is
@@ -221,6 +245,7 @@ static const NSTimeInterval kVPOAuthPollInterval = 15 * 60;
         [rows addObject:row];
     }
     [self.window setClaudeCardRows:rows staleLabels:staleLabels];
+    [self logCardRowsIfChanged:rows staleLabels:staleLabels];
 
     VPSessionFlags *flags = [VPSessionState currentClaudeFlags];
     [self.window updateClaudeWithHeadlinePercent:(sessionRow ? @(sessionRow.usedPercent) : nil)
