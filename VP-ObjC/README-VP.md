@@ -111,26 +111,128 @@ Claude Code already feeds the status line on every refresh
 `used_percentage`/`resets_at`/`updated_at` keys `tb_usage_breaker.py`
 depends on and only adding `seven_day` as a new sibling object.
 
-To wire it in, point `~/.claude/settings.json`'s `statusLine` command at
-`Scripts/tb-statusline-wrapper.sh` instead of the status line script
-directly:
+**Applied 23-sep-2026 (VP05).** It used to say "the CEO's call, documented
+here, not applied"; the CEO authorised it that night, because leaving it
+unwired is what forced the app to get these two numbers out of the keychain
+instead, which is what produced the password dialog. Install with:
 
 ```
-"command": "/Users/vasylpavlyuchok/Documents/TechBooster/own/codenotch/Scripts/tb-statusline-wrapper.sh"
+Scripts/install-statusline-sink.sh          # --dry-run to preview
 ```
 
-That wrapper tees stdin to the sink and then execs the existing
-`~/.claude/hooks/gsd-statusline.js` unchanged. As with the Swift version,
-nothing in this repo edits `~/.claude/settings.json` automatically — that
-one line is the CEO's call, documented here, not applied.
+That copies the wrapper and the sink into `~/.claude/hooks/` and points
+`~/.claude/settings.json`'s `statusLine` at
+`bash ~/.claude/hooks/tb-statusline-wrapper.sh`, backing the settings file up
+first. It deliberately installs into `~/.claude/hooks` rather than pointing
+settings.json into this repo: the repo has already moved once
+(`~/Documents/TechBooster/own` → `~/Documents/Claude/vp_designs`) and a moved
+repo must not be able to break the CEO's status line. The wrapper reads stdin
+once, feeds it to the sink, then runs `~/.claude/hooks/gsd-statusline.js`
+unchanged — status line output is identical to before.
+
+Side effect worth knowing: `~/.claude/state/usage-5h.json` is also what
+`~/.claude/bin/tb_usage_breaker.py` reads to decide whether a delegation is
+too close to the 5h ceiling. Nothing had written that file since 17-sep-2026,
+so the breaker was running on a frozen reading. Wiring the sink repairs that
+too.
+
+## The password dialog — root cause and fix (VP05, 23-sep-2026)
+
+Five episodes across 17–23 September, three "closed" diagnoses that each
+turned out to be incomplete, and one attempted fix that made it much worse.
+This is the measured account; nothing here is inferred.
+
+**What the OS actually does.** `Claude Code-credentials` lives in the legacy
+file-based login keychain. Access to it is gated by two independent things:
+the classic ACL app list, and a **partition list**. `securityd` logs the
+partition check by name, and that log is the whole story:
+
+```
+02:02:45.857 [integrity] ACL partition mismatch: client cdhash:8167e0…  ACL ("apple-tool:")
+02:02:45.858 [kcacl]     displaying keychain prompt for /Applications/Codenotch VP.app(25205)
+```
+
+**Why it kept coming back.** Every time the `claude` CLI refreshes its OAuth
+token it rewrites that keychain item, and the rewrite resets the partition
+list. Proven from the log: the list held `("apple-tool:","apple:","codesign:")`
+at 18:39:42 and just `("apple-tool:")` from 00:46:21 onward, with no
+`security` command run in between. Codenotch VP is signed with a local
+certificate, so it is never in that list. **No ACL or partition-list fix can
+survive this** — the next token refresh undoes it. That is why three previous
+"fixes" all came back.
+
+**Why the 22-sep attempt made it worse.** Setting the partition list by hand
+to `apple-tool:,apple:,codesign:` removed the `cdhash:` entry the user had
+granted, so the mismatch went from occasional to *every* 60s poll — two
+dialogs a minute. Confirmed by the log timestamps: isolated prompts before,
+then nine consecutive minutes of them.
+
+**Why `kSecUseAuthenticationUIFail` never helped.** That attribute governs the
+iOS-style *data-protection* keychain (Touch ID / passcode-protected keys). It
+has no effect on the legacy ACL prompt. Measured: with and without the flag,
+behaviour was byte-identical.
+
+**The fix.** `SecKeychainSetUserInteractionAllowed(FALSE)`, called before
+anything else at launch. It is the legacy switch that actually governs this
+prompt: with it off, `SecItemCopyMatching` returns `errSecAuthFailed`
+(-25293) immediately instead of putting a window on screen. Measured
+23-sep-2026 with a probe signed by the same `Codenotch VP Signing` identity,
+against the same mismatched partition list, 30 seconds apart:
+
+| arm | ACL mismatches | keychain prompts | SecurityAgent dialogs |
+|---|---|---|---|
+| interaction allowed (old behaviour) | 1 | **1** | **1** |
+| interaction disabled (the fix) | 60 | **0** | **0** |
+
+Three things changed together, and all three matter:
+
+1. **The dialog is now structurally impossible.** Nothing in this app can put
+   a keychain prompt on screen, whatever the ACL says.
+2. **Rows 1 and 2 no longer touch the keychain at all.** "Sesión actual" and
+   "Esta semana · todos los modelos" come from `usage-5h.json` (above),
+   refreshed every 15s with no keychain and no network.
+3. **A circuit breaker.** A failed keychain read stops further reads for 30
+   minutes. The failure is not transient — it persists until the item is
+   re-authorised — so retrying every 60s bought nothing.
+
+The OAuth poll itself dropped from every 60s to every 15 minutes, since the
+only thing left that needs it is the Fable row.
+
+### Known limitation: the Fable row
+
+Row 3 ("Fable esta semana · límite propio") has no source other than the live
+OAuth call, which needs the token from the keychain. Checked live on
+23-sep-2026: the status line's payload carries exactly `rate_limits.five_hour`
+and `rate_limits.seven_day` and **no per-model breakdown**, so the sink cannot
+cover it. When the keychain is unreadable the row is simply omitted and the
+plan label falls back to the last value actually read — no invented numbers.
+
+Because the partition list is reset by every CLI token refresh, and because a
+rebuild changes the app's `cdhash` and invalidates any grant, **this row can
+never be made reliable through the ACL.** Two honest options remain, both the
+CEO's call:
+
+- **Accept it**: the row appears when the item happens to be readable and is
+  hidden otherwise. This is what ships today.
+- **Read via an Apple-signed tool.** The partition list always contains
+  `apple-tool:`, and `/usr/bin/security` matches it. Verified 23-sep-2026:
+  `security find-generic-password` read the item in the same state where our
+  own signed binary was refused — exit 0, **0 prompts, 0 partition
+  mismatches**. Shelling out to it would restore the row permanently. It is
+  deliberately **not** implemented: it routes a credential read through an
+  Apple tool specifically to sidestep a restriction the OS applied to our
+  binary, and that is a decision to take deliberately in daylight, not a
+  detail to slip into a 3am bugfix.
 
 ## The Fable bar and Codex — same behavior as the Swift version
 
 Read-only Keychain access to the `Claude Code-credentials` item, the same
 `GET https://api.anthropic.com/api/oauth/usage` request with the same
 headers, the same "kind"/"scope.model.display_name" contains "fable" match,
-the same 60s minimum poll interval and 429 backoff curve (60s, doubling,
-capped at 15 minutes). Codex reads `~/.codex/auth.json` only if that folder
+and the same 429 backoff curve (60s, doubling, capped at 15 minutes). Since
+23-sep-2026 the timer that drives it runs every **15 minutes**, not every 60s
+— see "The password dialog" above for why; the 60s floor inside
+`pollWithCompletion:` remains as a lower bound. Codex reads `~/.codex/auth.json` only if that folder
 exists; on this Mac it does not, so the ring shows grey with "—" and the
 card says "Codex no está instalado" — no data is invented.
 

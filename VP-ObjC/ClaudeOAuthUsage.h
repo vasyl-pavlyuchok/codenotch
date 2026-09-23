@@ -32,6 +32,17 @@ NS_ASSUME_NONNULL_BEGIN
 
 @interface VPClaudeOAuthUsage : NSObject
 
+/* Turns the legacy keychain's user-interaction switch OFF for this process,
+ * for good. With it off a keychain read that would have opened the classic
+ * "Codenotch VP wants to access key Claude Code-credentials" dialog fails
+ * with errSecAuthFailed instead, silently.
+ *
+ * Call it once at launch. The keychain read path calls it too (dispatch_once,
+ * so it is free), which means no code path in this app can ever put a
+ * keychain dialog on the user's screen. See ClaudeOAuthUsage.m for the
+ * measured A/B that established this, and README-VP.md for the root cause. */
++ (void)disableKeychainUserInteraction;
+
 /* Poll for all three rows (session, weekly_all, then Fable — in that order,
  * matching the approved design's row order). Fires the completion on the
  * main queue with whichever of the three it found (possibly empty, never

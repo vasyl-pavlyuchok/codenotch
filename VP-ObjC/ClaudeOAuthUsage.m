@@ -27,26 +27,124 @@ static NSDate *_Nullable gLastAttempt = nil;
 static NSDate *_Nullable gBackoffUntil = nil;
 static NSInteger gConsecutive429 = 0;
 static BOOL gLoggedMissingFable = NO;
+/* Circuit breaker for the keychain itself (see +readKeychainCredentialData). */
+static NSDate *_Nullable gKeychainBlockedUntil = nil;
+static BOOL gLoggedKeychainBlocked = NO;
+
+/* How long to stop touching the keychain after a read fails. The failure we
+ * expect (partition-list mismatch) is not transient — it persists until the
+ * user re-authorises the item — so retrying every 60s buys nothing and only
+ * burns cycles. */
+static const NSTimeInterval kVPKeychainBackoff = 30 * 60;
 
 #pragma mark - Keychain
 
+/* THE fix for the repeated password dialog (VP05, 23-sep-2026). Measured, not
+ * assumed — see README-VP.md "The password dialog" for the full A/B.
+ *
+ * `Claude Code-credentials` lives in the LEGACY file-based login keychain
+ * (login.keychain-db). Its access control has two independent layers: the
+ * classic ACL app list, and the newer *partition list*. Every time the
+ * `claude` CLI refreshes its OAuth token it REWRITES that item, and the
+ * rewrite resets the partition list to `apple-tool:` only — proven from
+ * securityd's own log on 22/23-sep: the list held
+ * ("apple-tool:","apple:","codesign:") at 18:39:42 and just ("apple-tool:")
+ * from 00:46:21 onward, with no `security` command run in between. Codenotch
+ * VP is signed with a local certificate, so it is never in that list, and
+ * every read after a refresh logs `ACL partition mismatch` and then
+ * `displaying keychain prompt`. NO amount of ACL/partition tinkering fixes
+ * this for good: the next token refresh wipes it again. (Worse: setting the
+ * partition list by hand to "apple-tool:,apple:,codesign:" on 22-sep made it
+ * fire on nearly every 60s poll instead of occasionally.)
+ *
+ * `kSecUseAuthenticationUI: kSecUseAuthenticationUIFail` does NOT suppress
+ * this dialog — that attribute governs the iOS-style data-protection
+ * keychain (Touch ID / passcode-protected keys), not the legacy ACL prompt.
+ * Measured: with and without the flag the behaviour was byte-identical.
+ *
+ * The legacy switch that DOES govern it is this one. With it off,
+ * SecItemCopyMatching returns errSecAuthFailed (-25293) immediately instead
+ * of putting a window on the user's screen. Measured 23-sep-2026 with a probe
+ * signed by the same "Codenotch VP Signing" identity, against the same
+ * mismatched partition list, 30 seconds apart:
+ *   interaction allowed  ->  1 mismatch,  1 `displaying keychain prompt`,  1 SecurityAgent
+ *   interaction disabled -> 60 mismatches, 0 prompts,                      0 SecurityAgent
+ *
+ * This is process-global and permanent for our lifetime. That is exactly what
+ * we want: NOTHING in this app may ever put a keychain dialog on screen. The
+ * app is a passive read-only status widget; if it cannot read the item it
+ * hides the rows it cannot fill, it never interrupts the user. */
++ (void)disableKeychainUserInteraction {
+    static dispatch_once_t onceToken;
+    dispatch_once(&onceToken, ^{
+        /* Deprecated by Apple in favour of the data-protection keychain, but
+         * this item IS a legacy file-keychain item and this is the only API
+         * that governs its prompt. Still fully functional on macOS 14
+         * (measured 23-sep-2026). Scoped pragma so the rest of the build
+         * keeps its deprecation warnings. */
+#pragma clang diagnostic push
+#pragma clang diagnostic ignored "-Wdeprecated-declarations"
+        OSStatus status = SecKeychainSetUserInteractionAllowed(FALSE);
+#pragma clang diagnostic pop
+        if (status != errSecSuccess) {
+            /* Never fatal: worst case we are back to today's behaviour. */
+            fprintf(stderr, "codenotch-vp: SecKeychainSetUserInteractionAllowed(FALSE) failed, OSStatus %d\n", (int)status);
+        }
+    });
+}
+
 + (nullable NSDictionary *)readKeychainCredentialData {
+    /* Belt: no dialog may ever originate from this process. Called here
+     * rather than only at launch so it holds no matter which path gets here
+     * first. dispatch_once makes it free after the first call. */
+    [self disableKeychainUserInteraction];
+
+    /* Braces: once a read has failed, stop hammering. Without this the app
+     * would re-run a read it knows will fail on every single poll. */
+    NSDate *now = [NSDate date];
+    __block BOOL blocked = NO;
+    dispatch_sync([self stateQueue], ^{
+        blocked = (gKeychainBlockedUntil && [gKeychainBlockedUntil compare:now] == NSOrderedDescending);
+    });
+    if (blocked) return nil;
+
     NSDictionary *query = @{
         (__bridge id)kSecClass: (__bridge id)kSecClassGenericPassword,
         (__bridge id)kSecAttrService: @"Claude Code-credentials",
         (__bridge id)kSecAttrAccount: NSUserName(),
         (__bridge id)kSecReturnData: @YES,
         (__bridge id)kSecMatchLimit: (__bridge id)kSecMatchLimitOne,
+        /* Kept deliberately. It does not suppress the legacy ACL prompt (see
+         * above) but it is still correct for the data-protection keychain, and
+         * removing it would silently widen what this query is willing to do. */
         (__bridge id)kSecUseAuthenticationUI: (__bridge id)kSecUseAuthenticationUIFail
     };
     CFTypeRef item = NULL;
     OSStatus status = SecItemCopyMatching((__bridge CFDictionaryRef)query, &item);
     if (status != errSecSuccess || item == NULL) {
-        if (status != errSecItemNotFound) {
-            fprintf(stderr, "codenotch-vp: keychain read for Fable usage failed, OSStatus %d\n", (int)status);
+        __block BOOL shouldLog = NO;
+        dispatch_sync([self stateQueue], ^{
+            gKeychainBlockedUntil = [NSDate dateWithTimeIntervalSinceNow:kVPKeychainBackoff];
+            if (!gLoggedKeychainBlocked) {
+                gLoggedKeychainBlocked = YES;
+                shouldLog = YES;
+            }
+        });
+        if (shouldLog) {
+            fprintf(stderr,
+                    "codenotch-vp: keychain read failed (OSStatus %d) — no dialog was shown, "
+                    "backing off %.0f min. The session/weekly rows keep working from "
+                    "~/.claude/state/usage-5h.json; the Fable row and the plan label stay on "
+                    "their last known value until the item is readable again.\n",
+                    (int)status, kVPKeychainBackoff / 60.0);
         }
         return nil;
     }
+    /* A good read clears the breaker and re-arms the one-shot log. */
+    dispatch_sync([self stateQueue], ^{
+        gKeychainBlockedUntil = nil;
+        gLoggedKeychainBlocked = NO;
+    });
     NSData *data = (__bridge_transfer NSData *)item;
     NSError *error = nil;
     id obj = [NSJSONSerialization JSONObjectWithData:data options:0 error:&error];
@@ -217,9 +315,31 @@ static BOOL gLoggedMissingFable = NO;
 
 #pragma mark - Plan label
 
+/* Last successfully-read plan label, persisted so a keychain outage (or a
+ * relaunch during one) shows the last thing we actually read instead of
+ * blanking the field. Never a guess: only a value the keychain really gave
+ * us at some point is ever stored or returned. */
+static NSString *const kVPPlanLabelDefaultsKey = @"VPLastKnownPlanLabel";
+
++ (nullable NSString *)cachedPlanLabel {
+    NSString *cached = [[NSUserDefaults standardUserDefaults] stringForKey:kVPPlanLabelDefaultsKey];
+    return cached.length > 0 ? cached : nil;
+}
+
++ (nullable NSString *)rememberPlanLabel:(nullable NSString *)label {
+    if (label.length > 0) {
+        [[NSUserDefaults standardUserDefaults] setObject:label forKey:kVPPlanLabelDefaultsKey];
+        return label;
+    }
+    return [self cachedPlanLabel];
+}
+
 + (nullable NSString *)planLabel {
     NSDictionary *credential = [self readKeychainCredentialData];
-    if (!credential) return nil;
+    /* Keychain unreadable (partition list reset by the CLI's token refresh,
+     * breaker open, item missing...). Fall back to the last value we really
+     * read rather than emptying the field on the user. */
+    if (!credential) return [self cachedPlanLabel];
 
     /* "default_claude_max_5x" -> "Max 5x". Strips the constant prefix, then
      * title-cases each remaining underscore-separated word; a multiplier
@@ -233,14 +353,14 @@ static BOOL gLoggedMissingFable = NO;
         for (NSString *part in [stripped componentsSeparatedByString:@"_"]) {
             if (part.length > 0) [words addObject:part.capitalizedString];
         }
-        if (words.count > 0) return [words componentsJoinedByString:@" "];
+        if (words.count > 0) return [self rememberPlanLabel:[words componentsJoinedByString:@" "]];
     }
 
     NSString *subscriptionType = credential[@"subscriptionType"];
     if ([subscriptionType isKindOfClass:[NSString class]] && subscriptionType.length > 0) {
-        return subscriptionType.capitalizedString;
+        return [self rememberPlanLabel:subscriptionType.capitalizedString];
     }
-    return nil;
+    return [self cachedPlanLabel];
 }
 
 #pragma mark - Account email
