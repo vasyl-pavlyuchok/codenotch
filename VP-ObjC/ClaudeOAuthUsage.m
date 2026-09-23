@@ -93,6 +93,11 @@ static const NSTimeInterval kVPKeychainBackoff = 30 * 60;
     });
 }
 
+/* A fallback reader that went through /usr/bin/security to keep the Fable row
+ * alive was written on 23-sep-2026 and WITHDRAWN the same night, before ever
+ * being built. It is deliberately not in this file. See README-VP.md,
+ * "Known limitation: the Fable row", for what it did and what it would take
+ * to adopt it. */
 + (nullable NSDictionary *)readKeychainCredentialData {
     /* Belt: no dialog may ever originate from this process. Called here
      * rather than only at launch so it holds no matter which path gets here
@@ -121,6 +126,7 @@ static const NSTimeInterval kVPKeychainBackoff = 30 * 60;
     };
     CFTypeRef item = NULL;
     OSStatus status = SecItemCopyMatching((__bridge CFDictionaryRef)query, &item);
+
     if (status != errSecSuccess || item == NULL) {
         __block BOOL shouldLog = NO;
         dispatch_sync([self stateQueue], ^{
