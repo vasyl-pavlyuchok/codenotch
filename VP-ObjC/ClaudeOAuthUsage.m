@@ -1,6 +1,7 @@
 /* audience: machine */
 #import "ClaudeOAuthUsage.h"
 #import <Security/Security.h>
+#import <signal.h>
 
 static NSString *const kVPOAuthEndpoint = @"https://api.anthropic.com/api/oauth/usage";
 static const NSTimeInterval kVPMinPollInterval = 60.0;
@@ -93,19 +94,125 @@ static const NSTimeInterval kVPKeychainBackoff = 30 * 60;
     });
 }
 
-/* A fallback reader that went through /usr/bin/security to keep the Fable row
- * alive was written on 23-sep-2026 and WITHDRAWN the same night, before ever
- * being built. It is deliberately not in this file. See README-VP.md,
- * "Known limitation: the Fable row", for what it did and what it would take
- * to adopt it. */
+/* PRIMARY reader (VP06, 24-sep-2026 — the CEO's direct decision in session,
+ * after the 23-sep withdrawal documented in README-VP.md "The Fable row").
+ *
+ * Why a helper process: the item's partition list is reset to `apple-tool:`
+ * by every CLI token refresh (see above), and NOTHING signed by us will ever
+ * be in that list for long. `/usr/bin/security` IS an Apple tool, so it reads
+ * the item in exactly the state where our own SecItemCopyMatching is refused
+ * — verified 23-sep-2026: exit 0, 0 prompts, 0 partition mismatches.
+ *
+ * Contract: never hangs (hard deadline, then SIGKILL), never shows a dialog
+ * (stdin is /dev/null, so `security` cannot prompt), never logs or persists
+ * the secret (logs carry a byte count or an exit status only), never throws.
+ * On any failure it returns nil and the caller falls back to the Keychain API
+ * path below, which keeps its own 30-minute breaker. */
+static const NSTimeInterval kVPSecurityToolDeadline = 2.0;
+static BOOL gLoggedSecurityToolState = NO;   /* one-shot per state change, on +stateQueue */
+static BOOL gSecurityToolLastOK = NO;
+
++ (nullable NSData *)readCredentialViaSecurityTool {
+    NSTask *task = [[NSTask alloc] init];
+    task.executableURL = [NSURL fileURLWithPath:@"/usr/bin/security"];
+    task.arguments = @[ @"find-generic-password",
+                        @"-s", @"Claude Code-credentials",
+                        @"-a", NSUserName(),
+                        @"-w" ];
+    NSPipe *stdoutPipe = [NSPipe pipe];
+    task.standardOutput = stdoutPipe;
+    task.standardError = [NSFileHandle fileHandleWithNullDevice];
+    task.standardInput = [NSFileHandle fileHandleWithNullDevice];
+
+    /* Set BEFORE launch so a process that exits instantly still signals. */
+    dispatch_semaphore_t finished = dispatch_semaphore_create(0);
+    task.terminationHandler = ^(NSTask *_Nonnull t) { dispatch_semaphore_signal(finished); };
+
+    NSError *launchError = nil;
+    if (![task launchAndReturnError:&launchError]) {
+        [self noteSecurityToolResult:NO detail:[NSString stringWithFormat:@"launch failed (%ld)", (long)launchError.code]];
+        return nil;
+    }
+
+    /* Drain stdout off-thread so a full pipe can never stall the child. */
+    __block NSData *output = nil;
+    dispatch_group_t drain = dispatch_group_create();
+    NSFileHandle *reader = [stdoutPipe fileHandleForReading];
+    dispatch_group_async(drain, dispatch_get_global_queue(QOS_CLASS_UTILITY, 0), ^{
+        output = [reader readDataToEndOfFile];
+    });
+
+    long timedOut = dispatch_semaphore_wait(finished,
+        dispatch_time(DISPATCH_TIME_NOW, (int64_t)(kVPSecurityToolDeadline * NSEC_PER_SEC)));
+    if (timedOut != 0) {
+        kill(task.processIdentifier, SIGKILL);
+        [task waitUntilExit];
+        [self noteSecurityToolResult:NO detail:@"deadline exceeded, killed"];
+        return nil;
+    }
+    dispatch_group_wait(drain, dispatch_time(DISPATCH_TIME_NOW, (int64_t)(1 * NSEC_PER_SEC)));
+
+    if (task.terminationStatus != 0 || output.length == 0) {
+        [self noteSecurityToolResult:NO detail:[NSString stringWithFormat:@"exit %d, %lu bytes",
+                                                (int)task.terminationStatus, (unsigned long)output.length]];
+        return nil;
+    }
+
+    /* `-w` prints the secret followed by a newline; strip trailing whitespace. */
+    const uint8_t *bytes = output.bytes;
+    NSUInteger len = output.length;
+    while (len > 0 && (bytes[len - 1] == '\n' || bytes[len - 1] == '\r' || bytes[len - 1] == ' ')) len--;
+    NSData *trimmed = [output subdataWithRange:NSMakeRange(0, len)];
+    [self noteSecurityToolResult:YES detail:[NSString stringWithFormat:@"ok (%lu bytes)", (unsigned long)trimmed.length]];
+    return trimmed;
+}
+
+/* One line per state change (ok <-> failing), never per poll, never the data. */
++ (void)noteSecurityToolResult:(BOOL)ok detail:(NSString *)detail {
+    __block BOOL shouldLog = NO;
+    dispatch_sync([self stateQueue], ^{
+        if (!gLoggedSecurityToolState || gSecurityToolLastOK != ok) {
+            gLoggedSecurityToolState = YES;
+            gSecurityToolLastOK = ok;
+            shouldLog = YES;
+        }
+    });
+    if (shouldLog) {
+        fprintf(stderr, "codenotch-vp: security tool path: %s\n", detail.UTF8String);
+    }
+}
+
+/* Shared tail of both readers: the item is a JSON blob whose `claudeAiOauth`
+ * object carries `accessToken`. Anything else -> nil, never a throw. */
++ (nullable NSDictionary *)oauthDictFromCredentialData:(NSData *)data {
+    if (data.length == 0) return nil;
+    NSError *error = nil;
+    id obj = [NSJSONSerialization JSONObjectWithData:data options:0 error:&error];
+    if (![obj isKindOfClass:[NSDictionary class]]) return nil;
+    NSDictionary *oauth = ((NSDictionary *)obj)[@"claudeAiOauth"];
+    if (![oauth isKindOfClass:[NSDictionary class]]) return nil;
+    NSString *accessToken = oauth[@"accessToken"];
+    if (![accessToken isKindOfClass:[NSString class]] || accessToken.length == 0) return nil;
+    return oauth;
+}
+
 + (nullable NSDictionary *)readKeychainCredentialData {
     /* Belt: no dialog may ever originate from this process. Called here
      * rather than only at launch so it holds no matter which path gets here
      * first. dispatch_once makes it free after the first call. */
     [self disableKeychainUserInteraction];
 
-    /* Braces: once a read has failed, stop hammering. Without this the app
-     * would re-run a read it knows will fail on every single poll. */
+    /* 1. Primary: the Apple-signed helper. Cheap, so it may run on every poll
+     *    (the poll itself is already throttled to every 15 minutes). */
+    NSData *viaTool = [self readCredentialViaSecurityTool];
+    if (viaTool) {
+        NSDictionary *oauth = [self oauthDictFromCredentialData:viaTool];
+        if (oauth) return oauth;
+    }
+
+    /* 2. Fallback: our own Keychain API read, with its breaker. This is the
+     *    pre-VP06 path, unchanged: it succeeds only while the partition list
+     *    happens to include us, and backs off 30 minutes when it does not. */
     NSDate *now = [NSDate date];
     __block BOOL blocked = NO;
     dispatch_sync([self stateQueue], ^{
@@ -152,15 +259,7 @@ static const NSTimeInterval kVPKeychainBackoff = 30 * 60;
         gLoggedKeychainBlocked = NO;
     });
     NSData *data = (__bridge_transfer NSData *)item;
-    NSError *error = nil;
-    id obj = [NSJSONSerialization JSONObjectWithData:data options:0 error:&error];
-    if (![obj isKindOfClass:[NSDictionary class]]) return nil;
-    NSDictionary *dict = (NSDictionary *)obj;
-    NSDictionary *oauth = dict[@"claudeAiOauth"];
-    if (![oauth isKindOfClass:[NSDictionary class]]) return nil;
-    NSString *accessToken = oauth[@"accessToken"];
-    if (![accessToken isKindOfClass:[NSString class]] || accessToken.length == 0) return nil;
-    return oauth;
+    return [self oauthDictFromCredentialData:data];
 }
 
 #pragma mark - Date parsing

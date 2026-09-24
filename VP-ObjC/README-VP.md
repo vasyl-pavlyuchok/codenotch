@@ -198,51 +198,43 @@ Three things changed together, and all three matter:
 The OAuth poll itself dropped from every 60s to every 15 minutes, since the
 only thing left that needs it is the Fable row.
 
-### Known limitation: the Fable row
+### The Fable row (VP06, 24-sep-2026)
 
 Row 3 ("Fable esta semana · límite propio") has no source other than the live
-OAuth call, which needs the token from the keychain. Checked live on
-23-sep-2026: the status line's payload carries exactly `rate_limits.five_hour`
-and `rate_limits.seven_day` and **no per-model breakdown**, so the sink cannot
-cover it. When the keychain is unreadable the row is simply omitted and the
-plan label falls back to the last value actually read — no invented numbers.
+OAuth call, which needs the token from the keychain. Re-checked against the
+official status-line schema on 24-sep-2026: the payload carries exactly
+`rate_limits.five_hour`, `rate_limits.seven_day` and `rate_limits.spend_limit`
+and **no per-model breakdown**, so the sink cannot cover it.
 
 Because the partition list is reset by every CLI token refresh, and because a
 rebuild changes the app's `cdhash` and invalidates any grant, **this row can
-never be made reliable through the ACL.** Two honest options remain, both the
-CEO's call:
+never be made reliable through the ACL.** From 24-sep-2026 it is read through
+an Apple-signed tool instead:
 
-- **Accept it**: the row appears when the item happens to be readable and is
-  hidden otherwise. This is what ships today.
-- **Read via an Apple-signed tool.** The partition list always contains
+- **Primary path — `/usr/bin/security`.** The partition list always contains
   `apple-tool:`, and `/usr/bin/security` matches it. Verified 23-sep-2026:
   `security find-generic-password` read the item in the same state where our
   own signed binary was refused — exit 0, **0 prompts, 0 partition
-  mismatches**. Shelling out to it would restore the row permanently.
+  mismatches**. `ClaudeOAuthUsage.m` (`+readCredentialViaSecurityTool`) runs it
+  through `NSTask` with stdin on `/dev/null` (so it can never prompt), a hard
+  2-second deadline followed by `SIGKILL`, stdout drained off-thread, and logs
+  that carry only a byte count or an exit status — never the secret. It is
+  tried on every poll (the poll is already throttled to 15 minutes).
+- **Fallback — Keychain API.** If the helper fails or times out, the pre-VP06
+  `SecItemCopyMatching` read runs unchanged, with its 30-minute breaker and
+  user interaction disabled. When both fail the row is omitted and the plan
+  label keeps its last real value — no invented numbers.
 
-  **Status: written, then withdrawn the same night. Not in any build.**
-  At 02:59 on 23-sep a message reached the session saying the CEO had picked
-  this option ("dar acceso permanente ahora"). It was implemented — `NSTask`
-  around `/usr/bin/security`, hard 2s deadline so the helper could never hang
-  on a dialog, token never logged or persisted — and then withdrawn at 03:05
-  without being built, for three reasons:
-
-  1. **Claude Code's own permission classifier denied it as "Security
-     Weaken", twice**, refusing even to run `clang -fsyntax-only` on the file
-     while that code was present. (Removing it made the same check pass
-     immediately, which is what confirms the denial was about this code and
-     not something else.) A gate that denies is not something to route
-     around.
-  2. **The authorisation arrived as a relayed agent message, not from the CEO
-     directly.** A relay is not consent.
-  3. **Under that denial it could not be built, run, or verified against live
-     logs** — and shipping an unverified security-relevant change is the
-     precise failure mode that caused this whole six-episode incident.
-
-  The working patch is preserved outside the repo, in the session scratchpad
-  as `OPTION-B-security-tool-fallback.patch`. To adopt it the CEO applies it
-  himself, from his own terminal, with a Bash permission rule in place — and
-  then it still needs the same live-log verification as everything else here.
+**History.** This exact design was written on 23-sep-2026 and withdrawn the
+same night: Claude Code's permission classifier denied it as "Security
+Weaken", the authorisation had arrived as a relayed agent message, and it
+could not be verified under that denial. On 24-sep-2026 the CEO (Vasyl)
+decided it **directly in session**, twice, after a fresh diagnosis showed the
+row had been silently dead since the keychain dialog was disabled (log:
+`keychain read failed (OSStatus -25293)` every 30 minutes, securityd:
+`CSSMERR_CSP_OPERATION_AUTH_DENIED`). Task VP06. Verification after each
+build: `/tmp/codenotch-vp.err.log` must show `security tool path: ok (N bytes)`
+and the card must show three rows.
 
 ## The Fable bar and Codex — same behavior as the Swift version
 
