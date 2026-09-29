@@ -76,7 +76,7 @@ one-type-per-file granularity, and fewer files compile and link faster.
 
 ```
 mkdir -p "build-objc/Codenotch VP.app/Contents/MacOS" "build-objc/Codenotch VP.app/Contents/Resources"
-clang -fobjc-arc -framework AppKit -framework CoreGraphics -framework Security \
+clang -fobjc-arc -framework AppKit -framework CoreGraphics -framework Security -framework QuartzCore \
   VP-ObjC/Palette.m VP-ObjC/Glyphs.m VP-ObjC/UsageModel.m \
   VP-ObjC/ClaudeUsageFile.m VP-ObjC/ClaudeOAuthUsage.m VP-ObjC/CodexUsageReader.m \
   VP-ObjC/NotchWindow.m VP-ObjC/AppDelegate.m VP-ObjC/main.m \
@@ -86,21 +86,51 @@ codesign --force --deep -s - "build-objc/Codenotch VP.app"
 open "build-objc/Codenotch VP.app"
 ```
 
+`-framework QuartzCore` added 29-sep-2026: missing from this command since it
+was first written, even though `NotchWindow.m` has imported
+`<QuartzCore/QuartzCore.h>` and used `CAMediaTimingFunction` since
+`fdec045` (18-sep-2026). A link against a fresh output path fails with
+`Undefined symbols ... _OBJC_CLASS_$_CAMediaTimingFunction` without it —
+confirmed live while verifying the 29-sep fixes below. The already-installed
+`/Applications/Codenotch VP.app` kept working regardless because nothing had
+rebuilt it from scratch with this exact documented command since; anyone
+who did (a clean checkout, a different Mac) would have hit the same link
+error this session did.
+
 To fast-check a single file without a full link (seconds, not minutes):
 `clang -fsyntax-only -fobjc-arc -framework AppKit VP-ObjC/<File>.m`.
 
-To install into `~/Applications` and load the LaunchAgent:
-`VP-ObjC/Scripts/install-vp-objc.sh` (build first — it does not build for
-you). It reuses the same LaunchAgent identity
-(`io.techbooster.codenotch-vp`, same `~/Applications/Codenotch VP.app`
-destination) as the Swift build's `Scripts/install-vp.sh` — only the
-source tree it copies from differs (`build-objc/` vs `build/`).
+To install and load the LaunchAgent: `VP-ObjC/Scripts/install-vp-objc.sh`
+(build first — it does not build for you). Installs to `/Applications`, not
+`~/Applications` (CEO request, 18-sep-2026: could not find `~/Applications`
+in Finder — it is hidden from the sidebar by default). It reuses the same
+LaunchAgent identity (`io.techbooster.codenotch-vp`) as the Swift build's
+`Scripts/install-vp.sh` — only the source tree it copies from differs
+(`build-objc/` vs `build/`).
 
-## Wiring up the real 5h/weekly numbers (unchanged from the Swift version)
+**Don't launch the built app directly (double-click / `open`) as a substitute
+for the installer.** Found live, 29-sep-2026: doing that creates a SEPARATE
+process under an ephemeral per-app launchd job (`application.io.techbooster.
+codenotch-vp.<session>.<pid>`, visible in `launchctl list`), not the real
+`io.techbooster.codenotch-vp` LaunchAgent job — even while that real job
+shows as loaded. That stray instance's `stderr`/`stdout` go to `/dev/null`
+instead of `/tmp/codenotch-vp.{err,out}.log` (the plist's
+`StandardErrorPath`/`StandardOutPath` only apply to the job launchd itself
+starts), so nothing it does is diagnosable, and if it crashes `KeepAlive`
+does not revive it, because that key is only wired to the real job. Two
+instances can end up running at once this way (one stray, one real),
+overlapping the same pill. Always rebuild then re-run
+`VP-ObjC/Scripts/install-vp-objc.sh`, which `launchctl unload`/`load`s the
+real job — it replaces whatever was running under that job, but will not
+touch a stray manually-opened instance, which must be quit separately
+(`kill <pid>`, found via `ps aux | grep "Codenotch VP"`).
 
-Nothing about this needs to change for the ObjC build: `ClaudeUsageFile`
-reads the exact same `~/.claude/state/usage-5h.json` file, with the exact
-same keys, on the exact same 15-second cadence as the Swift version did.
+## Wiring up the real 5h/weekly numbers
+
+`ClaudeUsageFile` reads the exact same `~/.claude/state/usage-5h.json` file,
+with the exact same keys, on the exact same 15-second cadence as the Swift
+version did — that part is unchanged. As of 29-sep-2026 it is no longer the
+ONLY source it reads; see "Two sources for rows 1/2" below for why.
 
 `Scripts/tb-usage-sink.js` (the sibling `Scripts/` folder at the repo root,
 reused as-is — it's plain Node and entirely unaffected by the Swift/Command
@@ -135,6 +165,106 @@ Side effect worth knowing: `~/.claude/state/usage-5h.json` is also what
 too close to the 5h ceiling. Nothing had written that file since 17-sep-2026,
 so the breaker was running on a frozen reading. Wiring the sink repairs that
 too.
+
+### Two sources for rows 1/2 (29-sep-2026, CEO-reported)
+
+Rows 1 and 2 had gone stale again — `usage-5h.json` frozen since 26-sep-2026,
+three days, with no crash and no wiring change. Measured before touching
+anything: `settings.json`'s `statusLine` still pointed at the wrapper, the
+wrapper and `tb-usage-sink.js` were unchanged since 23-sep, and feeding the
+sink a synthetic status-line JSON by hand wrote a fresh file instantly. So
+the sink was never broken — **nothing was calling it with real data**.
+
+Root cause: `tb-usage-sink.js` only runs when the *terminal* `claude` CLI
+renders its status line (that's what invokes `statusLine`'s configured
+command). The CEO had stopped using the terminal CLI in favour of the Claude
+desktop app days before the file went stale — exactly when it stopped
+updating. The desktop app has no reason to shell out to a terminal-only
+status line hook, so nothing was ever going to call the sink again while
+that held.
+
+The fix is not "make the desktop app call the hook" — it is a second,
+independent source: the desktop app writes its OWN usage log at
+`~/Library/Application Support/Claude/plan-usage-history.json`
+(`{version, samples: [{t, org, u: {fh, sd}}, ...]}`, `t` epoch-ms, `fh`/`sd`
+the same 0-100 `five_hour`/`seven_day` percentages, appended roughly every
+15 minutes whenever that app runs). Confirmed live, 29-sep-2026: the file's
+mtime advanced in real time during this exact investigation, independently
+of any terminal session. `ClaudeUsageFile.readWithNow:` now reads both files
+and keeps whichever has the more recent `updatedAt`
+(`readStatuslineSink`/`readDesktopAppHistory`, merged in `readWithNow:`), so
+rows 1/2 stay live regardless of which client is actually running. Neither
+source carries a per-model breakdown (both checked live) — samples from the
+desktop app have no `resets_at` either, so a reading built from it leaves
+that field `nil` (no reset-time line for that row) rather than inventing one.
+Verified read-only against the real files on this Mac: with the sink's file
+at `22:14:07Z` and the desktop app's at `22:19:37Z`, `readWithNow:` picked
+the `22:19:37Z` reading and reported `isStale = NO`.
+
+This also means: if the CEO goes back to using the terminal CLI, rows 1/2
+keep working exactly as before (sink wins whenever it's the fresher one) —
+this is additive, not a replacement.
+
+### Fable row survives a restart now (29-sep-2026, CEO-reported)
+
+CEO-reported: "he consumido Fable y no lo refleja" — and separately, the row
+had gone missing outright after an app relaunch. Two different bugs, same
+row:
+
+1. **The keychain/`/usr/bin/security` read genuinely is flaky right now**,
+   independent of anything in this app — reproduced live while
+   investigating: a direct `/usr/bin/security find-generic-password` read
+   (same command `+readCredentialViaSecurityTool` runs) came back empty in
+   the same window the app's own log shows `deadline exceeded, killed` and
+   `keychain read failed (OSStatus -25293)`. This is the same documented
+   partition-list fragility as "The password dialog" below — not new, not
+   fixed by this change, and not something this app can fix from its side
+   (see that section for why no ACL/partition tinkering survives the next
+   CLI token refresh).
+2. **What WAS this app's own bug**: `oauthRows` (`AppDelegate.m`) held the
+   Fable row only in memory, starting at `@[]` on every launch. A relaunch —
+   or the routine flakiness in (1) landing right after one — wiped the row
+   completely until the next lucky poll, which reads as "it forgot my Fable
+   usage" even though the number itself was never wrong. The plan label
+   (`+planLabel`) already persisted to `NSUserDefaults` for exactly this
+   reason; the same treatment had never been extended to the Fable
+   percentage itself.
+
+Fixed: `VPClaudeOAuthUsage` now persists the last successfully-read Fable row
+(`+rememberFableRow:`, called every time `pollWithCompletion:` actually finds
+one) to `NSUserDefaults`, the same mechanism as `+planLabel`
+(`+cachedFableRow`, `+cachedFableRowIsStale` — stale after the same 30-min
+window `ClaudeUsageFile` uses). `VPUsageCoordinator` seeds `oauthRows` from
+that cache at construction instead of starting empty, and a poll that
+succeeds but happens not to include a `weekly_scoped`/Fable entry that round
+merges by label (`-mergeOAuthRows:`) instead of replacing the whole array —
+the old full-replace would have silently dropped a cached or previously-live
+Fable row the moment one ordinary poll came back with only session/
+weekly_all. A cached row older than 30 minutes is added to the same
+`staleLabels` set the session/weekly rows use, so it renders dimmed with
+"· desactualizado" instead of looking current. Verified with a standalone
+harness exercising `+rememberFableRow:`/`+cachedFableRow`/
+`+cachedFableRowIsStale` directly (9 checks, all passing) — deterministic,
+independent of the live keychain's documented flakiness.
+
+**Root cause of the missing row, found later the same day**: the CLI was
+logged out. `claude auth status` said `loggedIn: false` and the keychain item
+held `accessToken: ""`, `expiresAt: 0`, so the OAuth call had nothing to send.
+`~/.local/bin/claude auth login` refilled it (via `Scripts/claude-login.sh`,
+which bypasses the `tb-claude` shell wrapper that injects `--channels`), and
+the row came back at 69%, matching the Claude desktop app's Uso panel.
+
+**A `claude setup-token` token does not work here.** It is inference-only:
+`/api/oauth/usage` answers HTTP 403 to it. `ClaudeOAuthUsage.m` still reads
+`~/.claude/state/codenotch-token` (see `Scripts/save-token.sh`), but only when
+the keychain holds no token, and logs the 403 once. Nothing needs that file.
+The docs do not say how to revoke such a token server-side.
+
+**What this does not fix**: if the keychain read has never once succeeded
+since the CEO's last login/token-refresh, there is nothing to cache yet and
+the row is still omitted — same as before. This change makes a real reading
+survive restarts and transient failures; it cannot invent a number that was
+never read.
 
 ## The password dialog — root cause and fix (VP05, 23-sep-2026)
 

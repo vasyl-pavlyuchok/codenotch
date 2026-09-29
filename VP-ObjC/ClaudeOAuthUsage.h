@@ -49,8 +49,29 @@ NS_ASSUME_NONNULL_BEGIN
  * nil). Respects a 60s minimum interval and backs off on 429; every other
  * failure (no keychain item, network error, throttled) simply completes
  * with an empty array so the caller keeps showing the last good reading
- * instead of blanking rows or crashing. */
+ * instead of blanking rows or crashing. Every time it DOES find the Fable
+ * row, it also persists it (see +cachedFableRow) — this is what lets the row
+ * survive an app restart instead of the coordinator starting from nothing. */
 + (void)pollWithCompletion:(void (^)(NSArray<VPLimitRow *> *rows))completion;
+
+/* Last successfully-polled Fable row, persisted to NSUserDefaults exactly
+ * like +planLabel already was — so a relaunch (or a keychain outage that
+ * outlasts one) shows the last real reading instead of no row at all.
+ * CEO-reported, 29-sep-2026: with only the in-memory cache the old code had,
+ * a restart during the routine keychain flakiness documented in
+ * README-VP.md wiped the row completely, which read as "it forgot my Fable
+ * usage" even though the number itself was never wrong — the row just had
+ * nowhere to persist across a process boundary. nil if nothing has ever been
+ * successfully read. Never a guess: only a value the OAuth call really
+ * returned at some point is ever stored or returned. */
++ (nullable VPLimitRow *)cachedFableRow;
+
+/* YES if +cachedFableRow's underlying reading is older than the same 30-min
+ * window ClaudeUsageFile uses, or if there is no cached row at all. The
+ * caller uses this to add the Fable row to the same staleLabels set the
+ * session/weekly rows use, so an old cached value is dimmed and marked
+ * "· desactualizado" instead of shown as if it were current. */
++ (BOOL)cachedFableRowIsStale;
 
 /* The account's plan, e.g. "Max 5x" or "Pro" (CEO request, 18-sep-2026: show
  * the subscription type in the Claude hover card). Read first from

@@ -196,6 +196,13 @@ static BOOL gSecurityToolLastOK = NO;
     return oauth;
 }
 
++ (nullable NSString *)longLivedTokenFromFile {
+    NSString *path = [NSHomeDirectory() stringByAppendingString:@"/.claude/state/codenotch-token"];
+    NSString *text = [NSString stringWithContentsOfFile:path encoding:NSUTF8StringEncoding error:nil];
+    NSString *trimmed = [text stringByTrimmingCharactersInSet:[NSCharacterSet whitespaceAndNewlineCharacterSet]];
+    return trimmed.length > 0 ? trimmed : nil;
+}
+
 + (nullable NSDictionary *)readKeychainCredentialData {
     /* Belt: no dialog may ever originate from this process. Called here
      * rather than only at launch so it holds no matter which path gets here
@@ -262,6 +269,53 @@ static BOOL gSecurityToolLastOK = NO;
     return [self oauthDictFromCredentialData:data];
 }
 
+#pragma mark - Fable row cache
+
+/* Same idea and same mechanism as +rememberPlanLabel: NSUserDefaults, not the
+ * in-memory-only array VPUsageCoordinator used to rely on exclusively
+ * (AppDelegate.m's `oauthRows`, reset to empty by every relaunch). Stored as
+ * three primitives rather than an archived VPLimitRow so this file does not
+ * need VPLimitRow to adopt NSSecureCoding for one small cache. */
+static NSString *const kVPFableRowPercentDefaultsKey = @"VPLastKnownFablePercent";
+static NSString *const kVPFableRowResetsAtDefaultsKey = @"VPLastKnownFableResetsAt";
+static NSString *const kVPFableRowCachedAtDefaultsKey = @"VPLastKnownFableCachedAt";
+static const NSTimeInterval kVPFableRowStaleAfter = 30 * 60; /* matches VPClaudeUsageFile.staleAfter */
+
++ (void)rememberFableRow:(VPLimitRow *)row {
+    NSUserDefaults *defaults = [NSUserDefaults standardUserDefaults];
+    [defaults setDouble:row.usedPercent forKey:kVPFableRowPercentDefaultsKey];
+    if (row.resetsAt) {
+        [defaults setDouble:row.resetsAt.timeIntervalSince1970 forKey:kVPFableRowResetsAtDefaultsKey];
+    } else {
+        [defaults removeObjectForKey:kVPFableRowResetsAtDefaultsKey];
+    }
+    [defaults setDouble:[NSDate date].timeIntervalSince1970 forKey:kVPFableRowCachedAtDefaultsKey];
+}
+
++ (nullable NSDate *)cachedFableRowTimestamp {
+    NSUserDefaults *defaults = [NSUserDefaults standardUserDefaults];
+    if (![defaults objectForKey:kVPFableRowCachedAtDefaultsKey]) return nil;
+    return [NSDate dateWithTimeIntervalSince1970:[defaults doubleForKey:kVPFableRowCachedAtDefaultsKey]];
+}
+
++ (nullable VPLimitRow *)cachedFableRow {
+    NSUserDefaults *defaults = [NSUserDefaults standardUserDefaults];
+    if (![defaults objectForKey:kVPFableRowPercentDefaultsKey]) return nil;
+    double percent = [defaults doubleForKey:kVPFableRowPercentDefaultsKey];
+    NSDate *resetsAt = [defaults objectForKey:kVPFableRowResetsAtDefaultsKey]
+        ? [NSDate dateWithTimeIntervalSince1970:[defaults doubleForKey:kVPFableRowResetsAtDefaultsKey]]
+        : nil;
+    return [[VPLimitRow alloc] initWithLabel:@"Fable esta semana · límite propio"
+                                  usedPercent:percent
+                                     resetsAt:resetsAt];
+}
+
++ (BOOL)cachedFableRowIsStale {
+    NSDate *cachedAt = [self cachedFableRowTimestamp];
+    if (!cachedAt) return YES;
+    return [[NSDate date] timeIntervalSinceDate:cachedAt] > kVPFableRowStaleAfter;
+}
+
 #pragma mark - Date parsing
 
 + (nullable NSDate *)parseISO8601:(NSString *)text {
@@ -304,8 +358,17 @@ static BOOL gSecurityToolLastOK = NO;
         return;
     }
 
+    /* A 1-year token from `claude setup-token`, stored by the user in a 0600
+     * file, wins over the keychain: it needs no keychain access at all and does
+     * not empty itself when the CLI logs out (29-sep-2026: the keychain item had
+     * accessToken "" / expiresAt 0 while the desktop app kept working). */
     NSDictionary *credential = [self readKeychainCredentialData];
     NSString *accessToken = credential[@"accessToken"];
+    BOOL usedTokenFile = NO;
+    if (!accessToken.length) {
+        accessToken = [self longLivedTokenFromFile];
+        usedTokenFile = accessToken.length > 0;
+    }
     if (!accessToken.length) {
         completion(@[]);
         return;
@@ -335,6 +398,10 @@ static BOOL gSecurityToolLastOK = NO;
             dispatch_sync([self stateQueue], ^{ gConsecutive429 = 0; });
 
             if (error != nil || status < 200 || status >= 300 || data == nil) {
+                if (status == 401 || status == 403) {
+                    fprintf(stderr, "codenotch-vp: /api/oauth/usage answered HTTP %ld using the %s\n",
+                            (long)status, usedTokenFile ? "token file (this token type may lack the usage scope)" : "keychain token");
+                }
                 dispatch_async(dispatch_get_main_queue(), ^{ completion(@[]); });
                 return;
             }
@@ -394,9 +461,11 @@ static BOOL gSecurityToolLastOK = NO;
                         }
                     }
                     if ([displayName rangeOfString:@"fable" options:NSCaseInsensitiveSearch].location != NSNotFound) {
-                        [rows addObject:[[VPLimitRow alloc] initWithLabel:@"Fable esta semana · límite propio"
-                                                               usedPercent:percentNum.doubleValue
-                                                                  resetsAt:resetsAt]];
+                        VPLimitRow *fableRow = [[VPLimitRow alloc] initWithLabel:@"Fable esta semana · límite propio"
+                                                                      usedPercent:percentNum.doubleValue
+                                                                         resetsAt:resetsAt];
+                        [rows addObject:fableRow];
+                        [self rememberFableRow:fableRow];
                     }
                 }
             }

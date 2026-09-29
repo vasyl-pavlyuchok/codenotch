@@ -28,6 +28,14 @@
  * nothing writes it, so its frozen session resets_at eventually falls into
  * the past, and it never had weekly_all at all). */
 @property (nonatomic, copy) NSArray<VPLimitRow *> *oauthRows;
+/* Whether the Fable row currently sitting in oauthRows is a live reading or
+ * one seeded from VPClaudeOAuthUsage's on-disk cache — CEO-reported bug,
+ * 29-sep-2026: before this, oauthRows started as @[] on every relaunch and
+ * the Fable row simply vanished until the next poll succeeded, which reads
+ * as "it forgot how much Fable I used" even though the number was never
+ * wrong. Drives whether the row's label goes into pushClaudeUpdate's
+ * staleLabels set, same dimming/"· desactualizado" treatment as rows 1/2. */
+@property (nonatomic) BOOL fableIsStale;
 /* Fallback only, used for the session row until the first successful OAuth
  * poll lands (e.g. right at launch) — see pushClaudeUpdate. */
 @property (nonatomic, strong, nullable) VPClaudeUsageReading *claudeFileReading;
@@ -43,9 +51,28 @@
     self = [super init];
     if (self) {
         _window = window;
-        _oauthRows = @[];
+        /* Seed from the persisted cache instead of starting empty, so a
+         * relaunch shows the last real Fable reading (marked stale if it's
+         * more than 30 min old) rather than no row at all until the first
+         * poll — see the property comment above and ClaudeOAuthUsage.h. */
+        VPLimitRow *cachedFable = [VPClaudeOAuthUsage cachedFableRow];
+        _oauthRows = cachedFable ? @[cachedFable] : @[];
+        _fableIsStale = [VPClaudeOAuthUsage cachedFableRowIsStale];
     }
     return self;
+}
+
+static NSString *const kVPFableRowLabel = @"Fable esta semana · límite propio";
+
+/* Replaces rows by label, keeps everything else. A plain full-array
+ * replacement would let a poll that only found session/weekly_all this
+ * round (no weekly_scoped/Fable entry) silently wipe a Fable row that was
+ * already showing — including one just seeded from the on-disk cache. */
+- (void)mergeOAuthRows:(NSArray<VPLimitRow *> *)newRows {
+    NSMutableDictionary<NSString *, VPLimitRow *> *byLabel = [NSMutableDictionary dictionary];
+    for (VPLimitRow *row in self.oauthRows) byLabel[row.label] = row;
+    for (VPLimitRow *row in newRows) byLabel[row.label] = row;
+    self.oauthRows = byLabel.allValues;
 }
 
 /* How often the keychain-backed OAuth call runs. Was 60s until 23-sep-2026.
@@ -183,7 +210,13 @@ static const NSTimeInterval kVPOAuthPollInterval = 15 * 60;
          * round," not "there is no data," so only a non-empty result may
          * replace what's already showing. */
         if (rows.count > 0) {
-            weakSelf.oauthRows = rows;
+            [weakSelf mergeOAuthRows:rows];
+            for (VPLimitRow *row in rows) {
+                if ([row.label isEqualToString:kVPFableRowLabel]) {
+                    weakSelf.fableIsStale = NO;
+                    break;
+                }
+            }
         }
         [weakSelf pushClaudeUpdate];
     }];
@@ -212,11 +245,16 @@ static const NSTimeInterval kVPOAuthPollInterval = 15 * 60;
 }
 
 /* Builds the three-row Claude card in the approved order. 23-sep-2026: rows 1
- * and 2 now come from ~/.claude/state/usage-5h.json (no keychain, no network)
- * and only row 3 still depends on the OAuth call. When the keychain is
- * unreadable — which is the normal state after the `claude` CLI refreshes its
- * token and wipes the item's partition list — row 3 simply does not appear,
- * rather than the app inventing a number or nagging for a password. */
+ * and 2 now come from ClaudeUsageFile (no keychain, no network — as of
+ * 29-sep-2026 that reader itself merges the statusline sink and the desktop
+ * app's own usage log, whichever is fresher) and only row 3 still depends on
+ * the OAuth call. When the keychain is unreadable — which is the normal
+ * state after the `claude` CLI refreshes its token and wipes the item's
+ * partition list — row 3 falls back to the on-disk cache (dimmed, marked
+ * "· desactualizado" once it's over 30 min old) rather than either
+ * disappearing outright or inventing a number. It is omitted entirely only
+ * when nothing has ever been read successfully, i.e. `oauthRows` is still
+ * empty and there is no cache. */
 - (void)pushClaudeUpdate {
     NSMutableArray<VPLimitRow *> *rows = [NSMutableArray array];
     NSMutableSet<NSString *> *staleLabels = [NSMutableSet set];
@@ -243,6 +281,9 @@ static const NSTimeInterval kVPOAuthPollInterval = 15 * 60;
         if ([row.label isEqualToString:@"Sesión actual"]) continue;
         if ([row.label isEqualToString:@"Esta semana · todos los modelos"]) continue;
         [rows addObject:row];
+        if ([row.label isEqualToString:kVPFableRowLabel] && self.fableIsStale) {
+            [staleLabels addObject:row.label];
+        }
     }
     [self.window setClaudeCardRows:rows staleLabels:staleLabels];
     [self logCardRowsIfChanged:rows staleLabels:staleLabels];

@@ -10,6 +10,10 @@
     return [NSHomeDirectory() stringByAppendingString:@"/.claude/state/usage-5h.json"];
 }
 
++ (NSString *)desktopAppHistoryPath {
+    return [NSHomeDirectory() stringByAppendingString:@"/Library/Application Support/Claude/plan-usage-history.json"];
+}
+
 + (NSTimeInterval)staleAfter {
     return 30 * 60;
 }
@@ -23,7 +27,10 @@ static NSNumber *_Nullable VPNumberFromAny(id _Nullable v) {
     return [self readWithNow:[NSDate date]];
 }
 
-+ (nullable VPClaudeUsageReading *)readWithNow:(NSDate *)now {
+/* The Scripts/tb-usage-sink.js source: only written while the terminal CLI's
+ * status line is actually rendering (see the class-header comment for why
+ * that stopped being true for days at a time). */
++ (nullable VPClaudeUsageReading *)readStatuslineSink {
     NSData *data = [NSData dataWithContentsOfFile:[self path]];
     if (!data) return nil;
 
@@ -61,11 +68,51 @@ static NSNumber *_Nullable VPNumberFromAny(id _Nullable v) {
         }
     }
 
-    BOOL stale;
-    if (updated) {
-        stale = [now timeIntervalSinceDate:updated] > [self staleAfter];
-    } else {
-        stale = YES;
+    if (!fiveHour && !sevenDay) return nil;
+
+    VPClaudeUsageReading *reading = [VPClaudeUsageReading new];
+    reading.fiveHour = fiveHour;
+    reading.sevenDay = sevenDay;
+    reading.updatedAt = updated;
+    return reading;
+}
+
+/* The desktop app's own log: appended by that app itself, roughly every
+ * 15 minutes, independently of the terminal CLI or any hook. No resets_at in
+ * its samples, so rows built from it carry a nil resetsAt rather than an
+ * invented one — the reset-time line simply does not show for that row,
+ * exactly like the "no invented numbers" rule everywhere else in this
+ * reader. */
++ (nullable VPClaudeUsageReading *)readDesktopAppHistory {
+    NSData *data = [NSData dataWithContentsOfFile:[self desktopAppHistoryPath]];
+    if (!data) return nil;
+
+    id obj = [NSJSONSerialization JSONObjectWithData:data options:0 error:nil];
+    if (![obj isKindOfClass:[NSDictionary class]]) return nil;
+    NSArray *samples = ((NSDictionary *)obj)[@"samples"];
+    if (![samples isKindOfClass:[NSArray class]] || samples.count == 0) return nil;
+
+    id last = samples.lastObject;
+    if (![last isKindOfClass:[NSDictionary class]]) return nil;
+    NSDictionary *sample = (NSDictionary *)last;
+
+    NSNumber *tMillis = VPNumberFromAny(sample[@"t"]);
+    if (!tMillis) return nil;
+    NSDate *updated = [NSDate dateWithTimeIntervalSince1970:(tMillis.doubleValue / 1000.0)];
+
+    NSDictionary *u = [sample[@"u"] isKindOfClass:[NSDictionary class]] ? sample[@"u"] : nil;
+    if (!u) return nil;
+
+    VPLimitRow *fiveHour = nil;
+    NSNumber *fh = VPNumberFromAny(u[@"fh"]);
+    if (fh) {
+        fiveHour = [[VPLimitRow alloc] initWithLabel:@"Sesión actual" usedPercent:fh.doubleValue resetsAt:nil];
+    }
+
+    VPLimitRow *sevenDay = nil;
+    NSNumber *sd = VPNumberFromAny(u[@"sd"]);
+    if (sd) {
+        sevenDay = [[VPLimitRow alloc] initWithLabel:@"Esta semana · todos los modelos" usedPercent:sd.doubleValue resetsAt:nil];
     }
 
     if (!fiveHour && !sevenDay) return nil;
@@ -74,8 +121,26 @@ static NSNumber *_Nullable VPNumberFromAny(id _Nullable v) {
     reading.fiveHour = fiveHour;
     reading.sevenDay = sevenDay;
     reading.updatedAt = updated;
-    reading.isStale = stale;
     return reading;
+}
+
+/* Reads both sources and keeps whichever is actually fresher, so the rows
+ * stay live no matter which client (terminal CLI or desktop app) is the one
+ * actually running right now — see the class-header comment, 29-sep-2026. */
++ (nullable VPClaudeUsageReading *)readWithNow:(NSDate *)now {
+    VPClaudeUsageReading *fromSink = [self readStatuslineSink];
+    VPClaudeUsageReading *fromDesktopApp = [self readDesktopAppHistory];
+
+    VPClaudeUsageReading *chosen;
+    if (fromSink && fromDesktopApp) {
+        chosen = ([fromDesktopApp.updatedAt compare:fromSink.updatedAt] == NSOrderedDescending) ? fromDesktopApp : fromSink;
+    } else {
+        chosen = fromSink ?: fromDesktopApp;
+    }
+    if (!chosen) return nil;
+
+    chosen.isStale = chosen.updatedAt ? ([now timeIntervalSinceDate:chosen.updatedAt] > [self staleAfter]) : YES;
+    return chosen;
 }
 
 @end
