@@ -305,6 +305,12 @@ static const NSTimeInterval kVPFableRowStaleAfter = 30 * 60; /* matches VPClaude
     NSDate *resetsAt = [defaults objectForKey:kVPFableRowResetsAtDefaultsKey]
         ? [NSDate dateWithTimeIntervalSince1970:[defaults doubleForKey:kVPFableRowResetsAtDefaultsKey]]
         : nil;
+    /* The weekly window this reading belonged to already reset: the percentage
+     * describes a week that no longer exists, so showing it (even marked
+     * stale) is a wrong number, not an old one. Better no row than that.
+     * (2-oct-2026: the card showed 69 % cached on 29-sep for a week that had
+     * reset 3 days earlier.) */
+    if (resetsAt && [resetsAt timeIntervalSinceNow] < 0) return nil;
     return [[VPLimitRow alloc] initWithLabel:@"Fable esta semana · límite propio"
                                   usedPercent:percent
                                      resetsAt:resetsAt];
