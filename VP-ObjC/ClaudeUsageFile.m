@@ -1,5 +1,7 @@
 /* audience: machine */
 #import "ClaudeUsageFile.h"
+#import <errno.h>
+#import <signal.h>
 
 @implementation VPClaudeUsageReading
 @end
@@ -161,27 +163,55 @@ static NSNumber *_Nullable VPNumberFromAny(id _Nullable v) {
     return [now timeIntervalSinceDate:mtime] < seconds;
 }
 
-+ (BOOL)anySessionFileFreshSeconds:(NSTimeInterval)seconds now:(NSDate *)now {
-    NSString *dir = [[self home] stringByAppendingString:@"/.claude/sessions"];
-    NSArray<NSString *> *names = [[NSFileManager defaultManager] contentsOfDirectoryAtPath:dir error:nil];
-    if (!names) return NO;
-    for (NSString *name in names) {
-        if (![name hasSuffix:@".json"]) continue;
-        NSString *full = [dir stringByAppendingPathComponent:name];
-        if ([self mtimeWithinPath:full seconds:seconds now:now]) return YES;
-    }
-    return NO;
+/* CEO-reported bug, 3-oct-2026 ("no se actualiza el estado", after several
+ * earlier fixes): this used to guess "working" from whether any
+ * ~/.claude/sessions/<pid>.json had been modified in the last 90 s. Claude
+ * Code rewrites that file only when the session's status CHANGES, so a long
+ * turn (one tool running for minutes) went quiet after 90 s and the ring
+ * dropped to idle while Claude was busy, and a turn that had just ended kept
+ * reading as working for another 90 s. Files left by crashed sessions counted
+ * too. The original Swift Codenotch (Sources/Sessions/ClaudeSessionRecord.swift)
+ * never had this bug: it reads the record's own `status` field and checks the
+ * pid is alive. This is a port of that logic. */
+
+typedef NS_ENUM(NSInteger, VPRecordState) {
+    VPRecordStateUnknown = 0,   /* no status, or a word we do not know */
+    VPRecordStateIdle,
+    VPRecordStateBusy,
+    VPRecordStateWaiting,
+};
+
+/* Same mapping as ClaudeSessionRecord.init: `tempo` is the normalised form
+ * when present, `status` the raw one. */
++ (VPRecordState)stateOfRecord:(NSDictionary *)json {
+    NSString *tempo = [json[@"tempo"] isKindOfClass:[NSString class]] ? json[@"tempo"] : nil;
+    NSString *raw = [json[@"status"] isKindOfClass:[NSString class]] ? json[@"status"] : nil;
+    if ([tempo isEqualToString:@"blocked"] || [raw isEqualToString:@"waiting"]) return VPRecordStateWaiting;
+    if ([tempo isEqualToString:@"active"] || [raw isEqualToString:@"busy"]) return VPRecordStateBusy;
+    if ([tempo isEqualToString:@"idle"] || [raw isEqualToString:@"idle"]) return VPRecordStateIdle;
+    return VPRecordStateUnknown;
 }
 
-+ (BOOL)isClaudeWorkingWithNow:(NSDate *)now {
-    NSString *domainFlag = [[self home] stringByAppendingString:@"/.claude/state/tb-domain-flag.json"];
-    if ([self mtimeWithinPath:domainFlag seconds:60 now:now]) return YES;
-    return [self anySessionFileFreshSeconds:90 now:now];
+/* kill(pid, 0) succeeds (or fails with EPERM) only for a live process. A file
+ * a crashed session left behind must not keep the ring busy forever. */
++ (BOOL)isProcessAlive:(pid_t)pid {
+    if (pid <= 0) return NO;
+    if (kill(pid, 0) == 0) return YES;
+    return errno == EPERM;
 }
 
-+ (BOOL)isClaudeWaiting {
-    NSString *flag = [[self home] stringByAppendingString:@"/.claude/state/needs-user.flag"];
-    return [[NSFileManager defaultManager] fileExistsAtPath:flag];
+/* Fallback for a live record that reports no status we understand: the
+ * original reads the transcript tail to tell a turn in flight from a finished
+ * one. Cheaper and good enough for a ring: the transcript is appended as the
+ * turn goes, so a write in the last 20 s means a turn is running. */
++ (BOOL)transcriptRecentlyWrittenForRecord:(NSDictionary *)json now:(NSDate *)now {
+    NSString *cwd = [json[@"cwd"] isKindOfClass:[NSString class]] ? json[@"cwd"] : nil;
+    NSString *sessionID = [json[@"sessionId"] isKindOfClass:[NSString class]] ? json[@"sessionId"] : nil;
+    if (!cwd.length || !sessionID.length) return NO;
+    NSString *slug = [[cwd stringByReplacingOccurrencesOfString:@"/" withString:@"-"]
+                          stringByReplacingOccurrencesOfString:@"." withString:@"-"];
+    NSString *path = [NSString stringWithFormat:@"%@/.claude/projects/%@/%@.jsonl", [self home], slug, sessionID];
+    return [self mtimeWithinPath:path seconds:20 now:now];
 }
 
 + (VPSessionFlags *)currentClaudeFlags {
@@ -190,8 +220,37 @@ static NSNumber *_Nullable VPNumberFromAny(id _Nullable v) {
 
 + (VPSessionFlags *)currentClaudeFlagsWithNow:(NSDate *)now {
     VPSessionFlags *flags = [VPSessionFlags new];
-    flags.isWorking = [self isClaudeWorkingWithNow:now];
-    flags.isWaiting = [self isClaudeWaiting];
+    NSString *dir = [[self home] stringByAppendingString:@"/.claude/sessions"];
+    NSArray<NSString *> *names = [[NSFileManager defaultManager] contentsOfDirectoryAtPath:dir error:nil];
+    BOOL anyLive = NO, anyBusy = NO;
+    for (NSString *name in names) {
+        if (![name hasSuffix:@".json"]) continue;
+        NSData *data = [NSData dataWithContentsOfFile:[dir stringByAppendingPathComponent:name]];
+        if (!data) continue;
+        id obj = [NSJSONSerialization JSONObjectWithData:data options:0 error:nil];
+        if (![obj isKindOfClass:[NSDictionary class]]) continue;
+        NSDictionary *json = obj;
+        NSNumber *pid = [json[@"pid"] isKindOfClass:[NSNumber class]] ? json[@"pid"] : nil;
+        if (!pid || ![self isProcessAlive:pid.intValue]) continue;
+        anyLive = YES;
+        switch ([self stateOfRecord:json]) {
+            case VPRecordStateWaiting: flags.isWaiting = YES; break;
+            case VPRecordStateBusy:    anyBusy = YES; break;
+            case VPRecordStateIdle:    break;
+            case VPRecordStateUnknown:
+                if ([self transcriptRecentlyWrittenForRecord:json now:now]) anyBusy = YES;
+                break;
+        }
+    }
+    /* needs-user.flag (tb-codenotch-waiting-flag.py, set on Notification) is
+     * still honoured: it covers a prompt the record does not report. Only
+     * while some session is alive, so a flag stranded by a closed session
+     * cannot pulse the ring forever. */
+    if (anyLive && !flags.isWaiting) {
+        NSString *flag = [[self home] stringByAppendingString:@"/.claude/state/needs-user.flag"];
+        if ([[NSFileManager defaultManager] fileExistsAtPath:flag] && !anyBusy) flags.isWaiting = YES;
+    }
+    flags.isWorking = anyBusy;
     return flags;
 }
 
