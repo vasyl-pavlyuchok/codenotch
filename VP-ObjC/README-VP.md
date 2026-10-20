@@ -111,6 +111,12 @@ LaunchAgent identity (`io.techbooster.codenotch-vp`) as the Swift build's
 `Scripts/install-vp.sh` — only the source tree it copies from differs
 (`build-objc/` vs `build/`).
 
+Opening the app by hand is safe since 20-oct-2026 (`main.m`): a copy started
+outside the LaunchAgent redirects its stderr to `/tmp/codenotch-vp.err.log`, and
+a second copy exits at once if one is already running. After "Salir", opening
+`/Applications/Codenotch VP.app` starts one copy with the installed version. The
+paragraph below describes the older behaviour and is kept for history.
+
 **Don't launch the built app directly (double-click / `open`) as a substitute
 for the installer.** Found live, 29-sep-2026: doing that creates a SEPARATE
 process under an ephemeral per-app launchd job (`application.io.techbooster.
