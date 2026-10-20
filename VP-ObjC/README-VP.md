@@ -82,9 +82,12 @@ clang -fobjc-arc -framework AppKit -framework CoreGraphics -framework Security -
   VP-ObjC/NotchWindow.m VP-ObjC/AppDelegate.m VP-ObjC/main.m \
   -o "build-objc/Codenotch VP.app/Contents/MacOS/Codenotch VP"
 cp VP-ObjC/../VP/Info.plist "build-objc/Codenotch VP.app/Contents/Info.plist"
+/usr/libexec/PlistBuddy -c "Set :CFBundleVersion $(git rev-list --count HEAD)" "build-objc/Codenotch VP.app/Contents/Info.plist"
 codesign --force --deep -s - "build-objc/Codenotch VP.app"
 open "build-objc/Codenotch VP.app"
 ```
+
+The PlistBuddy line (20-oct-2026) stamps the commit count into the build number, so the settings menu shows "Codenotch VP v0.2.0 (N)" and changes with every build; bump `CFBundleShortVersionString` in `VP/Info.plist` for a new release. It had stayed at 0.1.0 since the first commit.
 
 `-framework QuartzCore` added 29-sep-2026: missing from this command since it
 was first written, even though `NotchWindow.m` has imported

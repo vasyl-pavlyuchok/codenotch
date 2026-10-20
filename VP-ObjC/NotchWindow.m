@@ -1049,7 +1049,9 @@ static NSTimeInterval const kVPHideDelay = 0.35; /* grace period before sliding 
     NSDictionary *info = [NSBundle mainBundle].infoDictionary;
     NSString *name = info[@"CFBundleName"] ?: @"Codenotch VP";
     NSString *version = info[@"CFBundleShortVersionString"];
+    NSString *build = info[@"CFBundleVersion"];
     NSString *titleText = version.length ? [NSString stringWithFormat:@"%@ v%@", name, version] : name;
+    if (version.length && build.length) titleText = [titleText stringByAppendingFormat:@" (%@)", build];
     NSMenuItem *titleItem = [menu addItemWithTitle:titleText action:NULL keyEquivalent:@""];
     titleItem.enabled = NO;
 
