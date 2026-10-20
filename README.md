@@ -1,3 +1,12 @@
+> **About this fork.** This is Vasyl Pavlyuchok's fork of
+> [vinzdg/codenotch](https://github.com/vinzdg/codenotch).
+> The `main` branch is an untouched copy of the original project and only tracks
+> upstream. **Our version lives in the `tb` branch (the default branch here):
+> "Codenotch VP", an Objective-C rewrite in [`VP-ObjC/`](VP-ObjC/)** with the
+> session, weekly and Fable usage rings and card. See
+> [`VP-ObjC/README-VP.md`](VP-ObjC/README-VP.md) for how it works and how to build
+> it. The text below is the original project's README.
+
 <div align="center">
 
 ![Codenotch](docs/design/codenotch-banner.png)
