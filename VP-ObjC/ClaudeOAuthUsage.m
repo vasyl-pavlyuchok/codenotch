@@ -113,10 +113,14 @@ static BOOL gLoggedSecurityToolState = NO;   /* one-shot per state change, on +s
 static BOOL gSecurityToolLastOK = NO;
 
 + (nullable NSData *)readCredentialViaSecurityTool {
+    return [self readCredentialViaSecurityToolForService:@"Claude Code-credentials"];
+}
+
++ (nullable NSData *)readCredentialViaSecurityToolForService:(NSString *)service {
     NSTask *task = [[NSTask alloc] init];
     task.executableURL = [NSURL fileURLWithPath:@"/usr/bin/security"];
     task.arguments = @[ @"find-generic-password",
-                        @"-s", @"Claude Code-credentials",
+                        @"-s", service,
                         @"-a", NSUserName(),
                         @"-w" ];
     NSPipe *stdoutPipe = [NSPipe pipe];
@@ -203,11 +207,71 @@ static BOOL gSecurityToolLastOK = NO;
     return trimmed.length > 0 ? trimmed : nil;
 }
 
+/* Keychain item the CLI creates for CLAUDE_CONFIG_DIR=~/.codenotch-claude:
+ * "Claude Code-credentials-" + first 8 hex of sha256 of that path. */
+static NSString *const kVPDedicatedService = @"Claude Code-credentials-fe988d0c";
+static BOOL gDedicatedRefreshRunning = NO;
+static NSDate *_Nullable gDedicatedRefreshLast = nil;
+
+/* The access token lives ~8h and only a running CLI renews it. Nothing else
+ * runs the CLI in that config dir, so near expiry we run `claude auth status`
+ * there, off the main thread, and let the next poll read the renewed item. */
++ (void)refreshDedicatedLoginIfExpiring:(NSDictionary *)oauth {
+    NSNumber *expiresMs = [oauth[@"expiresAt"] isKindOfClass:[NSNumber class]] ? oauth[@"expiresAt"] : nil;
+    if (!expiresMs) return;
+    NSTimeInterval secondsLeft = expiresMs.doubleValue / 1000.0 - [NSDate date].timeIntervalSince1970;
+    if (secondsLeft > 30 * 60) return;
+    __block BOOL go = NO;
+    dispatch_sync([self stateQueue], ^{
+        if (!gDedicatedRefreshRunning && (!gDedicatedRefreshLast || [[NSDate date] timeIntervalSinceDate:gDedicatedRefreshLast] > 10 * 60)) {
+            gDedicatedRefreshRunning = YES;
+            gDedicatedRefreshLast = [NSDate date];
+            go = YES;
+        }
+    });
+    if (!go) return;
+    dispatch_async(dispatch_get_global_queue(QOS_CLASS_UTILITY, 0), ^{
+        NSTask *task = [[NSTask alloc] init];
+        task.executableURL = [NSURL fileURLWithPath:[NSHomeDirectory() stringByAppendingString:@"/.local/bin/claude"]];
+        task.arguments = @[ @"auth", @"status" ];
+        task.environment = @{ @"CLAUDE_CONFIG_DIR": [NSHomeDirectory() stringByAppendingString:@"/.codenotch-claude"],
+                              @"HOME": NSHomeDirectory(),
+                              @"PATH": @"/usr/bin:/bin:/usr/local/bin" };
+        task.standardOutput = [NSFileHandle fileHandleWithNullDevice];
+        task.standardError = [NSFileHandle fileHandleWithNullDevice];
+        task.standardInput = [NSFileHandle fileHandleWithNullDevice];
+        dispatch_semaphore_t finished = dispatch_semaphore_create(0);
+        task.terminationHandler = ^(NSTask *_Nonnull t) { dispatch_semaphore_signal(finished); };
+        if ([task launchAndReturnError:nil]) {
+            if (dispatch_semaphore_wait(finished, dispatch_time(DISPATCH_TIME_NOW, 30 * NSEC_PER_SEC)) != 0) {
+                kill(task.processIdentifier, SIGKILL);
+            }
+        }
+        fprintf(stderr, "codenotch-vp: dedicated login was %.0f min from expiry, ran `claude auth status` in ~/.codenotch-claude\n", secondsLeft / 60.0);
+        dispatch_sync([self stateQueue], ^{ gDedicatedRefreshRunning = NO; });
+    });
+}
+
 + (nullable NSDictionary *)readKeychainCredentialData {
     /* Belt: no dialog may ever originate from this process. Called here
      * rather than only at launch so it holds no matter which path gets here
      * first. dispatch_once makes it free after the first call. */
     [self disableKeychainUserInteraction];
+
+    /* 0. Codenotch's own login (20-oct-2026). Claude Desktop rewrites the default
+     *    "Claude Code-credentials" item EMPTY a few seconds after each session it
+     *    starts (item mdat 03:03:36 vs Desktop's "Starting local session" 03:03:31;
+     *    same on 29-sep). A login made with CLAUDE_CONFIG_DIR=~/.codenotch-claude
+     *    (Scripts/codenotch-login.sh) lives in a different item that Desktop does
+     *    not touch, so it is read first and the default item stays the fallback. */
+    NSData *dedicated = [self readCredentialViaSecurityToolForService:kVPDedicatedService];
+    if (dedicated) {
+        NSDictionary *oauth = [self oauthDictFromCredentialData:dedicated];
+        if (oauth) {
+            [self refreshDedicatedLoginIfExpiring:oauth];
+            return oauth;
+        }
+    }
 
     /* 1. Primary: the Apple-signed helper. Cheap, so it may run on every poll
      *    (the poll itself is already throttled to every 15 minutes). */

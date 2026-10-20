@@ -18,7 +18,7 @@ NS_ASSUME_NONNULL_BEGIN
 /* Only ever meaningfully called when isInstalled is true. Completes with nil
  * on any failure (no credential, network error, bad response) so the caller
  * can show "installed but unavailable" rather than crash. */
-+ (void)pollWithCompletion:(void (^)(VPLimitRow *_Nullable row))completion;
++ (void)pollWithCompletion:(void (^)(NSArray<VPLimitRow *> *rows))completion;
 
 @end
 

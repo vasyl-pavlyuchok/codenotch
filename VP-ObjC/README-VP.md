@@ -266,6 +266,27 @@ the row is still omitted — same as before. This change makes a real reading
 survive restarts and transient failures; it cannot invent a number that was
 never read.
 
+### Own login, inner ring, Codex weekly (20-oct-2026, PR81)
+
+- **What emptied the CLI login.** The default `Claude Code-credentials` item was
+  rewritten empty about 4 s after each session Claude Desktop starts (item mdat
+  03:03:36 vs Desktop's "Starting local session" 03:03:31; same on 29-sep).
+  Inferred from those timestamps, not seen in the binary. `claude auth status`
+  does not touch the item.
+- **Fix.** `Scripts/codenotch-login.sh` logs in with `CLAUDE_CONFIG_DIR=
+  ~/.codenotch-claude`, which makes the CLI use another keychain item
+  (`Claude Code-credentials-fe988d0c`, sha256 of that path). `ClaudeOAuthUsage.m`
+  reads it first and keeps the default item as fallback. The access token lasts
+  ~8 h; 30 min before expiry the app runs `claude auth status` in that config dir
+  to renew it. Renewal is NOT verified yet (PR82).
+- **Card.** The session row reads "Sesión actual (5 horas)". Rows built from the
+  desktop log borrow the reset time from the live OAuth row. The OAuth poll runs
+  every 2 min.
+- **Rings.** A thin inner ring shows the week next to the outer session ring, for
+  Claude and for Codex (`secondary_window`, untested here: Codex is not installed
+  on this Mac).
+- Cloud/API credit sections ($250 / $100) were left out on purpose.
+
 ## The password dialog — root cause and fix (VP05, 23-sep-2026)
 
 Five episodes across 17–23 September, three "closed" diagnoses that each

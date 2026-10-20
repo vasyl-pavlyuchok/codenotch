@@ -36,6 +36,8 @@ NS_ASSUME_NONNULL_BEGIN
 /* A provider cell */
 @property (class, nonatomic, readonly) CGFloat ringDiameter;    /* .ring 56x56 */
 @property (class, nonatomic, readonly) CGFloat ringStroke;
+@property (class, nonatomic, readonly) CGFloat innerRingRadius;
+@property (class, nonatomic, readonly) CGFloat innerRingStroke;
 @property (class, nonatomic, readonly) CGFloat ringRadius;      /* circle r=24 inside a 56x56 box */
 @property (class, nonatomic, readonly) CGFloat glyphSize;       /* .ring .glyph svg 22x22 */
 @property (class, nonatomic, readonly) CGFloat ringToLabelGap;  /* .prov gap:10 */
@@ -108,6 +110,10 @@ CGPathRef VPRoundedRectPathCreate(CGSize size, CGFloat radius);
 /* Review fix #1: when YES, the ring and its label are dimmed to signal the
  * reading is older than 30 minutes rather than a live number. */
 @property (nonatomic, getter=isStale) BOOL stale;
+/* Thin inner ring: this week, all models (CEO request, 20-oct-2026, so the
+ * week is visible without hovering). nil = no inner ring. */
+@property (nonatomic, strong, nullable) NSNumber *weeklyPercent;
+@property (nonatomic, getter=isWeeklyStale) BOOL weeklyStale;
 @end
 
 #pragma mark - Tooltip card
@@ -206,6 +212,8 @@ CGPathRef VPRoundedRectPathCreate(CGSize size, CGFloat radius);
 - (void)updateCodexWithHeadlinePercent:(nullable NSNumber *)headlinePercent
                               installed:(BOOL)installed;
 
+- (void)updateCodexWeeklyPercent:(nullable NSNumber *)weeklyPercent;
+- (void)updateClaudeWeeklyPercent:(nullable NSNumber *)weeklyPercent isStale:(BOOL)isStale;
 - (void)setClaudeCardRows:(NSArray<VPLimitRow *> *)rows staleLabels:(NSSet<NSString *> *)staleLabels;
 /* The account's plan, e.g. "Max 5x" (CEO request, 18-sep-2026), shown on the
  * Claude card's title row. nil hides it. */

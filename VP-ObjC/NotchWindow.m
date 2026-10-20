@@ -28,7 +28,9 @@ static CGFloat gVPPillScale = 1.0;
 + (CGFloat)ringDiameter { return 32 * self.scale; }
 + (CGFloat)ringStroke { return 2.5 * self.scale; }
 + (CGFloat)ringRadius { return 13.5 * self.scale; }
-+ (CGFloat)glyphSize { return 13 * self.scale; }
++ (CGFloat)glyphSize { return 11 * self.scale; }
++ (CGFloat)innerRingRadius { return 9.6 * self.scale; }
++ (CGFloat)innerRingStroke { return 1.6 * self.scale; }
 + (CGFloat)ringToLabelGap { return 6 * self.scale; }
 + (CGFloat)labelFontSize { return 10 * self.scale; }
 + (CGFloat)labelHeight { return 13 * self.scale; }
@@ -267,6 +269,27 @@ static NSColor *VPWorkingPulseColor(VPGlyphKind kind) {
         CGContextRestoreGState(ctx);
     }
 
+    /* Inner thin ring: this week (all models). Same top-clockwise start and the
+     * same usage-band colours as the outer ring; dimmed when stale. */
+    if (self.installed && self.weeklyPercent != nil) {
+        double wpct = self.weeklyPercent.doubleValue;
+        CGFloat wfraction = MAX(0, MIN(1, wpct / 100.0));
+        CGContextSaveGState(ctx);
+        CGContextSetStrokeColorWithColor(ctx, [VPPalette ringTrack].CGColor);
+        CGContextSetLineWidth(ctx, VPLayout.innerRingStroke);
+        CGContextAddArc(ctx, center.x, center.y, VPLayout.innerRingRadius, 0, 2 * M_PI, 0);
+        CGContextStrokePath(ctx);
+        if (wfraction > 0) {
+            NSColor *wcolor = VPUsageBandColor(VPUsageBandForPercent(wpct));
+            if (self.weeklyStale) wcolor = [wcolor colorWithAlphaComponent:0.5];
+            CGContextSetStrokeColorWithColor(ctx, wcolor.CGColor);
+            CGContextSetLineCap(ctx, kCGLineCapRound);
+            CGContextAddArc(ctx, center.x, center.y, VPLayout.innerRingRadius, -M_PI / 2, -M_PI / 2 + 2 * M_PI * wfraction, 0);
+            CGContextStrokePath(ctx);
+        }
+        CGContextRestoreGState(ctx);
+    }
+
     /* Glyph, centred in the ring. While working, it breathes from its resting
      * colour up to the provider's brand colour and back (CEO feedback,
      * 18-sep-2026), instead of the ring spinning. */
@@ -338,10 +361,16 @@ static NSDictionary *VPRowMeasureAttrs(void) {
 
 static CGFloat const kVPRowLabelResetGap = 8;
 
+/* The session row is keyed by "Sesión actual" everywhere else; the card shows
+ * the window length next to it (CEO request, 20-oct-2026). */
+static NSString *VPRowDisplayLabel(VPLimitRow *row) {
+    return [row.label isEqualToString:@"Sesión actual"] ? @"Sesión actual (5 horas)" : row.label;
+}
+
 static BOOL VPRowNeedsStackedReset(VPLimitRow *row, CGFloat contentWidth) {
     if (!row.resetsAt) return NO;
     NSDictionary *attrs = VPRowMeasureAttrs();
-    CGFloat labelW = [row.label sizeWithAttributes:attrs].width;
+    CGFloat labelW = [VPRowDisplayLabel(row) sizeWithAttributes:attrs].width;
     CGFloat resetW = [VPResetTimeLabel(row.resetsAt, [NSDate date]) sizeWithAttributes:attrs].width;
     return (labelW + kVPRowLabelResetGap + resetW) > contentWidth;
 }
@@ -481,7 +510,7 @@ static BOOL VPRowNeedsStackedReset(VPLimitRow *row, CGFloat contentWidth) {
         };
         NSString *resetText = row.resetsAt ? VPResetTimeLabel(row.resetsAt, [NSDate date]) : nil;
         BOOL stackReset = resetText && VPRowNeedsStackedReset(row, contentWidth);
-        [row.label drawAtPoint:CGPointMake(x, y) withAttributes:labelAttrs];
+        [VPRowDisplayLabel(row) drawAtPoint:CGPointMake(x, y) withAttributes:labelAttrs];
         if (resetText && !stackReset) {
             NSSize size = [resetText sizeWithAttributes:resetAttrs];
             [resetText drawAtPoint:CGPointMake(x + contentWidth - size.width, y) withAttributes:resetAttrs];
@@ -1176,6 +1205,17 @@ static NSTimeInterval const kVPHideDelay = 0.35; /* grace period before sliding 
     self.contentView.codexCell.installed = installed;
     self.contentView.codexCell.headlinePercent = headlinePercent;
     self.contentView.codexCell.needsDisplay = YES;
+}
+
+- (void)updateCodexWeeklyPercent:(nullable NSNumber *)weeklyPercent {
+    self.contentView.codexCell.weeklyPercent = weeklyPercent;
+    self.contentView.codexCell.needsDisplay = YES;
+}
+
+- (void)updateClaudeWeeklyPercent:(nullable NSNumber *)weeklyPercent isStale:(BOOL)isStale {
+    self.contentView.claudeCell.weeklyPercent = weeklyPercent;
+    self.contentView.claudeCell.weeklyStale = isStale;
+    self.contentView.claudeCell.needsDisplay = YES;
 }
 
 - (void)setClaudeCardRows:(NSArray<VPLimitRow *> *)rows staleLabels:(NSSet<NSString *> *)staleLabels {

@@ -91,7 +91,7 @@ static NSString *const kVPFableRowLabel = @"Fable esta semana · límite propio"
  * line's payload (checked live 23-sep-2026: `rate_limits` carries exactly
  * `five_hour` and `seven_day`, with no per-model breakdown). A weekly quota
  * does not move meaningfully in 60 seconds, so 15 minutes is plenty. */
-static const NSTimeInterval kVPOAuthPollInterval = 15 * 60;
+static const NSTimeInterval kVPOAuthPollInterval = 2 * 60; /* was 15 min; 20-oct-2026: the dialog is impossible now and the CEO wants live numbers */
 
 - (void)start {
     [self refreshClaudeFile];
@@ -131,6 +131,16 @@ static const NSTimeInterval kVPOAuthPollInterval = 15 * 60;
     return nil;
 }
 
+/* The desktop app's usage log has no resets_at, so a row built from it would
+ * show no reset time. Keep its fresher percentage and borrow the reset time
+ * from the live OAuth row of the same window, if that one is still in the
+ * future (CEO request, 20-oct-2026: always show when it resets). */
+- (VPLimitRow *)row:(VPLimitRow *)fileRow withResetFrom:(nullable VPLimitRow *)oauthRow {
+    if (fileRow.resetsAt || !oauthRow.resetsAt) return fileRow;
+    if ([oauthRow.resetsAt timeIntervalSinceNow] <= 0) return fileRow;
+    return [[VPLimitRow alloc] initWithLabel:fileRow.label usedPercent:fileRow.usedPercent resetsAt:oauthRow.resetsAt];
+}
+
 /* Which row the "Sesión actual" ring and card should show, and whether it is
  * stale. 23-sep-2026: the local file is now the PRIMARY source, not the
  * fallback — it refreshes every 15s from the status line with no keychain and
@@ -142,7 +152,7 @@ static const NSTimeInterval kVPOAuthPollInterval = 15 * 60;
     VPClaudeUsageReading *reading = self.claudeFileReading;
     if (reading.fiveHour && !reading.isStale) {
         if (outStale) *outStale = NO;
-        return reading.fiveHour;
+        return [self row:reading.fiveHour withResetFrom:[self oauthSessionRow]];
     }
     VPLimitRow *oauthRow = [self oauthSessionRow];
     if (oauthRow) {
@@ -162,7 +172,7 @@ static const NSTimeInterval kVPOAuthPollInterval = 15 * 60;
     VPClaudeUsageReading *reading = self.claudeFileReading;
     if (reading.sevenDay && !reading.isStale) {
         if (outStale) *outStale = NO;
-        return reading.sevenDay;
+        return [self row:reading.sevenDay withResetFrom:[self oauthRowWithLabel:label]];
     }
     VPLimitRow *oauthRow = [self oauthRowWithLabel:label];
     if (oauthRow) {
@@ -286,6 +296,7 @@ static const NSTimeInterval kVPOAuthPollInterval = 15 * 60;
         }
     }
     [self.window setClaudeCardRows:rows staleLabels:staleLabels];
+    [self.window updateClaudeWeeklyPercent:(weeklyRow ? @(weeklyRow.usedPercent) : nil) isStale:weeklyStale];
     [self logCardRowsIfChanged:rows staleLabels:staleLabels];
 
     VPSessionFlags *flags = [VPSessionState currentClaudeFlags];
@@ -299,18 +310,22 @@ static const NSTimeInterval kVPOAuthPollInterval = 15 * 60;
     self.codexInstalled = [VPCodexUsageReader isInstalled];
     if (!self.codexInstalled) {
         self.codexRow = nil;
+        [self.window updateCodexWeeklyPercent:nil];
         [self.window updateCodexWithHeadlinePercent:nil installed:NO];
         [self.window setCodexCardRows:@[] installed:NO];
         return;
     }
     __weak typeof(self) weakSelf = self;
-    [VPCodexUsageReader pollWithCompletion:^(VPLimitRow *_Nullable row) {
+    [VPCodexUsageReader pollWithCompletion:^(NSArray<VPLimitRow *> *rows) {
         typeof(self) strongSelf = weakSelf;
         if (!strongSelf) return;
+        VPLimitRow *row = rows.firstObject;
         strongSelf.codexRow = row;
         NSNumber *pct = row ? @(row.usedPercent) : nil;
+        VPLimitRow *weekly = rows.count > 1 ? rows[1] : nil;
+        [strongSelf.window updateCodexWeeklyPercent:(weekly ? @(weekly.usedPercent) : nil)];
         [strongSelf.window updateCodexWithHeadlinePercent:pct installed:YES];
-        [strongSelf.window setCodexCardRows:(row ? @[row] : @[]) installed:YES];
+        [strongSelf.window setCodexCardRows:rows installed:YES];
     }];
 }
 
