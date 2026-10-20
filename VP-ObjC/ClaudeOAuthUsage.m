@@ -214,13 +214,15 @@ static BOOL gDedicatedRefreshRunning = NO;
 static NSDate *_Nullable gDedicatedRefreshLast = nil;
 
 /* The access token lives ~8h and only a running CLI renews it. Nothing else
- * runs the CLI in that config dir, so near expiry we run `claude auth status`
+ * runs the CLI in that config dir, so near expiry we run a one-turn `claude -p`
  * there, off the main thread, and let the next poll read the renewed item. */
 + (void)refreshDedicatedLoginIfExpiring:(NSDictionary *)oauth {
     NSNumber *expiresMs = [oauth[@"expiresAt"] isKindOfClass:[NSNumber class]] ? oauth[@"expiresAt"] : nil;
     if (!expiresMs) return;
     NSTimeInterval secondsLeft = expiresMs.doubleValue / 1000.0 - [NSDate date].timeIntervalSince1970;
-    if (secondsLeft > 30 * 60) return;
+    NSString *override = NSProcessInfo.processInfo.environment[@"VP_REFRESH_WINDOW_SEC"]; /* test hook */
+    NSTimeInterval window = override.length ? override.doubleValue : 30 * 60;
+    if (secondsLeft > window) return;
     __block BOOL go = NO;
     dispatch_sync([self stateQueue], ^{
         if (!gDedicatedRefreshRunning && (!gDedicatedRefreshLast || [[NSDate date] timeIntervalSinceDate:gDedicatedRefreshLast] > 10 * 60)) {
@@ -233,7 +235,9 @@ static NSDate *_Nullable gDedicatedRefreshLast = nil;
     dispatch_async(dispatch_get_global_queue(QOS_CLASS_UTILITY, 0), ^{
         NSTask *task = [[NSTask alloc] init];
         task.executableURL = [NSURL fileURLWithPath:[NSHomeDirectory() stringByAppendingString:@"/.local/bin/claude"]];
-        task.arguments = @[ @"auth", @"status" ];
+        /* `auth status` does NOT renew the token (checked 20-oct: expiry unchanged);
+         * a real one-turn run does, and costs a few haiku tokens. */
+        task.arguments = @[ @"-p", @"ok", @"--model", @"haiku", @"--max-turns", @"1" ];
         task.environment = @{ @"CLAUDE_CONFIG_DIR": [NSHomeDirectory() stringByAppendingString:@"/.codenotch-claude"],
                               @"HOME": NSHomeDirectory(),
                               @"PATH": @"/usr/bin:/bin:/usr/local/bin" };
@@ -243,11 +247,11 @@ static NSDate *_Nullable gDedicatedRefreshLast = nil;
         dispatch_semaphore_t finished = dispatch_semaphore_create(0);
         task.terminationHandler = ^(NSTask *_Nonnull t) { dispatch_semaphore_signal(finished); };
         if ([task launchAndReturnError:nil]) {
-            if (dispatch_semaphore_wait(finished, dispatch_time(DISPATCH_TIME_NOW, 30 * NSEC_PER_SEC)) != 0) {
+            if (dispatch_semaphore_wait(finished, dispatch_time(DISPATCH_TIME_NOW, 90 * NSEC_PER_SEC)) != 0) {
                 kill(task.processIdentifier, SIGKILL);
             }
         }
-        fprintf(stderr, "codenotch-vp: dedicated login was %.0f min from expiry, ran `claude auth status` in ~/.codenotch-claude\n", secondsLeft / 60.0);
+        fprintf(stderr, "codenotch-vp: dedicated login was %.0f min from expiry, ran a one-turn `claude -p` in ~/.codenotch-claude\n", secondsLeft / 60.0);
         dispatch_sync([self stateQueue], ^{ gDedicatedRefreshRunning = NO; });
     });
 }

@@ -277,8 +277,8 @@ never read.
   ~/.codenotch-claude`, which makes the CLI use another keychain item
   (`Claude Code-credentials-fe988d0c`, sha256 of that path). `ClaudeOAuthUsage.m`
   reads it first and keeps the default item as fallback. The access token lasts
-  ~8 h; 30 min before expiry the app runs `claude auth status` in that config dir
-  to renew it. Renewal is NOT verified yet (PR82).
+  ~8 h; 30 min before expiry the app runs a one-turn `claude -p` in that config dir
+  to renew it. `claude auth status` does NOT renew the token (checked 20-oct, after the first token expired at 11:22 with no renewal); a one-turn `claude -p` does, and that is what the app runs.
 - **Card.** The session row reads "Sesión actual (5 horas)". Rows built from the
   desktop log borrow the reset time from the live OAuth row. The OAuth poll runs
   every 2 min.
