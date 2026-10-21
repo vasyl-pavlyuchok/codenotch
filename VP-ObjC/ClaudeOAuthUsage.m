@@ -238,9 +238,16 @@ static NSDate *_Nullable gDedicatedRefreshLast = nil;
         /* `auth status` does NOT renew the token (checked 20-oct: expiry unchanged);
          * a real one-turn run does, and costs a few haiku tokens. */
         task.arguments = @[ @"-p", @"ok", @"--model", @"haiku", @"--max-turns", @"1" ];
-        task.environment = @{ @"CLAUDE_CONFIG_DIR": [NSHomeDirectory() stringByAppendingString:@"/.codenotch-claude"],
-                              @"HOME": NSHomeDirectory(),
-                              @"PATH": @"/usr/bin:/bin:/usr/local/bin" };
+        /* The CLI finds its credential in the keychain under account $USER; a bare
+         * environment (no USER) made every run answer "Not logged in" — found
+         * 21-oct, ~30 wasted runs overnight and a token that never renewed. */
+        NSMutableDictionary *env = [NSProcessInfo.processInfo.environment mutableCopy];
+        env[@"CLAUDE_CONFIG_DIR"] = [NSHomeDirectory() stringByAppendingString:@"/.codenotch-claude"];
+        env[@"HOME"] = NSHomeDirectory();
+        env[@"USER"] = NSUserName();
+        env[@"LOGNAME"] = NSUserName();
+        env[@"PATH"] = @"/usr/bin:/bin:/usr/local/bin";
+        task.environment = env;
         task.standardOutput = [NSFileHandle fileHandleWithNullDevice];
         task.standardError = [NSFileHandle fileHandleWithNullDevice];
         task.standardInput = [NSFileHandle fileHandleWithNullDevice];
@@ -251,7 +258,12 @@ static NSDate *_Nullable gDedicatedRefreshLast = nil;
                 kill(task.processIdentifier, SIGKILL);
             }
         }
-        fprintf(stderr, "codenotch-vp: dedicated login was %.0f min from expiry, ran a one-turn `claude -p` in ~/.codenotch-claude\n", secondsLeft / 60.0);
+        NSData *after = [self readCredentialViaSecurityToolForService:kVPDedicatedService];
+        NSDictionary *renewed = after ? [self oauthDictFromCredentialData:after] : nil;
+        NSNumber *newExpiry = [renewed[@"expiresAt"] isKindOfClass:[NSNumber class]] ? renewed[@"expiresAt"] : nil;
+        double minutesLeftNow = newExpiry ? (newExpiry.doubleValue / 1000.0 - [NSDate date].timeIntervalSince1970) / 60.0 : -1;
+        fprintf(stderr, "codenotch-vp: dedicated login was %.0f min from expiry, ran a one-turn `claude -p`; it now has %.0f min left (%s)\n",
+                secondsLeft / 60.0, minutesLeftNow, minutesLeftNow > secondsLeft / 60.0 + 5 ? "renewed" : "NOT renewed");
         dispatch_sync([self stateQueue], ^{ gDedicatedRefreshRunning = NO; });
     });
 }

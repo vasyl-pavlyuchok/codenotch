@@ -287,7 +287,7 @@ never read.
   (`Claude Code-credentials-fe988d0c`, sha256 of that path). `ClaudeOAuthUsage.m`
   reads it first and keeps the default item as fallback. The access token lasts
   ~8 h; 30 min before expiry the app runs a one-turn `claude -p` in that config dir
-  to renew it. `claude auth status` does NOT renew the token (checked 20-oct, after the first token expired at 11:22 with no renewal); a one-turn `claude -p` does, and that is what the app runs.
+  to renew it. `claude auth status` does NOT renew the token (checked 20-oct, after the first token expired at 11:22 with no renewal); a one-turn `claude -p` does, and that is what the app runs. First version of that fix still failed overnight (20/21-oct): the app passed the child a bare environment without `USER`, the CLI could not find its keychain item and answered "Not logged in", so ~30 runs wasted tokens and the token expired at 23:08 unrenewed. The child now inherits the app's environment, and the log line reports whether the token was really renewed ("... it now has N min left (renewed)"); verified in the installed app on 21-oct (expired token, 480 min after).
 - **Card.** The session row reads "Sesión actual (5 horas)". Rows built from the
   desktop log borrow the reset time from the live OAuth row. The OAuth poll runs
   every 2 min.
