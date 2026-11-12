@@ -165,7 +165,7 @@ That copies the wrapper and the sink into `~/.claude/hooks/` and points
 `bash ~/.claude/hooks/tb-statusline-wrapper.sh`, backing the settings file up
 first. It deliberately installs into `~/.claude/hooks` rather than pointing
 settings.json into this repo: the repo has already moved once
-(`~/Documents/TechBooster/own` → `~/Documents/Claude/vp_designs`) and a moved
+(`~/TECHBOOSTER/own` → `~/CLAUDE-VP/vp-designs`) and a moved
 repo must not be able to break the CEO's status line. The wrapper reads stdin
 once, feeds it to the sink, then runs `~/.claude/hooks/gsd-statusline.js`
 unchanged — status line output is identical to before.

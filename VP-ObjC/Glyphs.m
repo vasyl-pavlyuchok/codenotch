@@ -208,7 +208,7 @@ CGPathRef VPSVGPathCreateFitted(CGPathRef path, CGSize viewBox, CGSize size) {
 
 /* Provider glyph paths, copied verbatim from VP/Glyphs.swift, which itself
  * copied them from the source SVGs at
- * ~/Documents/TechBooster/tb-os/kb/marca/logos-terceros/{claude.svg,openai-symbol.svg}. */
+ * ~/TECHBOOSTER/tb-os/kb/marca/logos-terceros/{claude.svg,openai-symbol.svg}. */
 static NSString *VPGlyphPathString(VPGlyphKind kind) {
     switch (kind) {
         case VPGlyphKindClaude:

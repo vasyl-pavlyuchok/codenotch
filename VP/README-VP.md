@@ -38,7 +38,7 @@ command, pointing it at `Scripts/tb-statusline-wrapper.sh` instead of the
 status line script directly:
 
 ```
-"command": "/Users/vasylpavlyuchok/Documents/TechBooster/own/codenotch/Scripts/tb-statusline-wrapper.sh"
+"command": "/Users/vasylpavlyuchok/CLAUDE-VP/vp-designs/codenotch/Scripts/tb-statusline-wrapper.sh"
 ```
 
 That wrapper tees stdin to the sink and then execs the existing

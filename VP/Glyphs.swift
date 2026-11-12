@@ -1,6 +1,6 @@
 // audience: machine
 // Provider glyph paths, copied verbatim from the source SVGs at
-// ~/Documents/TechBooster/tb-os/kb/marca/logos-terceros/{claude.svg,openai-symbol.svg}
+// ~/TECHBOOSTER/tb-os/kb/marca/logos-terceros/{claude.svg,openai-symbol.svg}
 // and parsed with SVGPath.swift. Kept as plain string constants (not files
 // bundled into the app) so the tiny swiftc build has zero resource step.
 import CoreGraphics
