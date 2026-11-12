@@ -82,6 +82,7 @@ clang -fobjc-arc -framework AppKit -framework CoreGraphics -framework Security -
   VP-ObjC/NotchWindow.m VP-ObjC/AppDelegate.m VP-ObjC/main.m \
   -o "build-objc/Codenotch VP.app/Contents/MacOS/Codenotch VP"
 cp VP-ObjC/../VP/Info.plist "build-objc/Codenotch VP.app/Contents/Info.plist"
+cp VP-ObjC/assets/icon/AppIcon.icns "build-objc/Codenotch VP.app/Contents/Resources/AppIcon.icns"
 /usr/libexec/PlistBuddy -c "Set :CFBundleVersion $(git rev-list --count HEAD)" "build-objc/Codenotch VP.app/Contents/Info.plist"
 codesign --force --deep -s - "build-objc/Codenotch VP.app"
 open "build-objc/Codenotch VP.app"

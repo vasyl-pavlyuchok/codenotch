@@ -1,18 +1,16 @@
 <?xml version="1.0" encoding="UTF-8"?>
-<!-- audience: machine -->
-<!-- Info.plist for Codenotch VP.app (Objective-C build). LSUIElement=true is what
-     keeps it out of the Dock and the Cmd-Tab switcher, since this is a background
-     menu-edge utility, not a document-window app. -->
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <plist version="1.0">
 <dict>
+	<key>CFBundleDisplayName</key>
+	<string>Codenotch VP</string>
 	<key>CFBundleExecutable</key>
 	<string>Codenotch VP</string>
+	<key>CFBundleIconFile</key>
+	<string>AppIcon</string>
 	<key>CFBundleIdentifier</key>
 	<string>io.techbooster.codenotch-vp</string>
 	<key>CFBundleName</key>
-	<string>Codenotch VP</string>
-	<key>CFBundleDisplayName</key>
 	<string>Codenotch VP</string>
 	<key>CFBundlePackageType</key>
 	<string>APPL</string>
