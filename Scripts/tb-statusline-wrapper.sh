@@ -3,7 +3,7 @@
 # Source of truth for ~/.claude/hooks/tb-statusline-wrapper.sh. Install with
 # Scripts/install-statusline-sink.sh — settings.json points at the copy in
 # ~/.claude/hooks, never at this repo, because the repo has already moved once
-# (~/Documents/TechBooster/own -> ~/Documents/Claude/vp_designs) and a moved
+# (~/TECHBOOSTER/own -> ~/CLAUDE-VP/vp-designs) and a moved
 # repo must not be able to break the CEO's status line.
 #
 # Reads the status line's stdin JSON once, fans it out to tb-usage-sink.js
